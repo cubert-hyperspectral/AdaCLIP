@@ -12,7 +12,7 @@ from scipy.ndimage import gaussian_filter
 import cv2
 
 # Importing from local modules
-from tools import write2csv, setup_seed, Logger
+from adaclip_tools import write2csv, setup_seed, Logger
 from dataset import get_data, dataset_dict
 from method import AdaCLIP_Trainer
 from PIL import Image

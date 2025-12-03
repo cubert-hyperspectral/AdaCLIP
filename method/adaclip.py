@@ -33,6 +33,12 @@ class ProjectLayer(nn.Module):
         return out_tokens
 
 class PromptLayer(nn.Module):
+    """Learnable prompt layer for text/visual encoder.
+
+    This version mirrors the patched implementation used in cuvis.ai to handle
+    dynamic prompt shapes robustly for both text and visual branches.
+    """
+
     def __init__(self, channel, length, depth, is_text, prompting_type, enabled=True):
         super(PromptLayer, self).__init__()
 
@@ -41,21 +47,18 @@ class PromptLayer(nn.Module):
         self.depth = depth
         self.is_text = is_text
         self.enabled = enabled
-
         self.prompting_type = prompting_type
 
-        if self.enabled: # only when enabled, the parameters should be constructed
-            if 'S' in prompting_type: # static prompts
-                # learnable
+        if self.enabled:
+            if "S" in prompting_type:  # static prompts
                 self.static_prompts = nn.ParameterList(
-                    [nn.Parameter(torch.empty(self.length, self.channel))
-                     for _ in range(self.depth)])
-
+                    [nn.Parameter(torch.empty(self.length, self.channel)) for _ in range(self.depth)]
+                )
                 for single_para in self.static_prompts:
                     nn.init.normal_(single_para, std=0.02)
 
-            if 'D' in prompting_type: # dynamic prompts
-                self.dynamic_prompts = [0.] # place holder
+            if "D" in prompting_type:  # dynamic prompts
+                self.dynamic_prompts = [0.0]  # placeholder
 
     def set_dynamic_prompts(self, dynamic_prompts):
         self.dynamic_prompts = dynamic_prompts
@@ -64,73 +67,109 @@ class PromptLayer(nn.Module):
         if self.enabled:
             length = self.length
 
-            # only prompt the first J layers
             if indx < self.depth:
-                if 'S' in self.prompting_type and 'D' in self.prompting_type: # both
+                if "S" in self.prompting_type and "D" in self.prompting_type:
                     static_prompts = self.static_prompts[indx].unsqueeze(0).expand(x.shape[1], -1, -1)
-                    textual_context = self.dynamic_prompts + static_prompts
-                elif 'S' in self.prompting_type:  # static
+
+                    # Expand dynamic_prompts to match text batch size (x.shape[1]).
+                    # dynamic_prompts typically has shape (image_batch, length, channel)
+                    # while text processing creates x.shape[1] variations per image.
+                    if isinstance(self.dynamic_prompts, torch.Tensor):
+                        if self.dynamic_prompts.shape[0] != x.shape[1]:
+                            dynamic_prompts_expanded = self.dynamic_prompts[0:1].expand(
+                                x.shape[1], -1, -1
+                            )
+                        else:
+                            dynamic_prompts_expanded = self.dynamic_prompts
+                    else:
+                        dynamic_prompts_expanded = self.dynamic_prompts
+                    textual_context = dynamic_prompts_expanded + static_prompts
+                elif "S" in self.prompting_type:
                     static_prompts = self.static_prompts[indx].unsqueeze(0).expand(x.shape[1], -1, -1)
                     textual_context = static_prompts
-                elif 'D' in self.prompting_type:  # dynamic
-                    textual_context = self.dynamic_prompts
+                elif "D" in self.prompting_type:
+                    if isinstance(self.dynamic_prompts, torch.Tensor):
+                        if self.dynamic_prompts.shape[0] != x.shape[1]:
+                            dynamic_prompts_expanded = self.dynamic_prompts[0:1].expand(
+                                x.shape[1], -1, -1
+                            )
+                        else:
+                            dynamic_prompts_expanded = self.dynamic_prompts
+                    else:
+                        dynamic_prompts_expanded = self.dynamic_prompts
+                    textual_context = dynamic_prompts_expanded
                 else:
-                    print('You should at least choose one type of prompts when the prompting branches are not none.')
-                    raise NotImplementedError
+                    raise NotImplementedError("You should choose at least one type of prompts.")
 
-            if indx == 0:  # for the first layer
+            if indx == 0:
                 x = x
             else:
-                if indx < self.depth:  # replace with learnalbe tokens
+                if indx < self.depth:
                     prefix = x[:1, :, :]
-                    suffix = x[1 + length:, :, :]
+                    suffix = x[1 + length :, :, :]
                     textual_context = textual_context.permute(1, 0, 2).half()
                     x = torch.cat([prefix, textual_context, suffix], dim=0)
-                else:  # keep the same
+                else:
                     x = x
         else:
             x = x
 
-        x, attn_tmp = resblock(q_x=x, k_x=k_x, v_x= v_x, attn_mask=attn_mask)
-
+        x, attn_tmp = resblock(q_x=x, k_x=k_x, v_x=v_x, attn_mask=attn_mask)
         return x, attn_tmp
 
     def forward_visual(self, resblock, indx, x, k_x=None, v_x=None, attn_mask: Optional[torch.Tensor] = None):
         if self.enabled:
             length = self.length
 
-            # only prompt the first J layers
             if indx < self.depth:
-                if 'S' in self.prompting_type and 'D' in self.prompting_type: # both
+                if "S" in self.prompting_type and "D" in self.prompting_type:
                     static_prompts = self.static_prompts[indx].unsqueeze(0).expand(x.shape[1], -1, -1)
-                    visual_context = self.dynamic_prompts + static_prompts
-                elif 'S' in self.prompting_type:  # static
+                    # For visual prompts, x.shape[1] is the image batch size, which should match
+                    # dynamic_prompts shape, but handle edge cases for consistency.
+                    if isinstance(self.dynamic_prompts, torch.Tensor):
+                        if self.dynamic_prompts.shape[0] != x.shape[1]:
+                            dynamic_prompts_expanded = self.dynamic_prompts[0:1].expand(
+                                x.shape[1], -1, -1
+                            )
+                        else:
+                            dynamic_prompts_expanded = self.dynamic_prompts
+                    else:
+                        dynamic_prompts_expanded = self.dynamic_prompts
+                    visual_context = dynamic_prompts_expanded + static_prompts
+                elif "S" in self.prompting_type:
                     static_prompts = self.static_prompts[indx].unsqueeze(0).expand(x.shape[1], -1, -1)
                     visual_context = static_prompts
-                elif 'D' in self.prompting_type:  # dynamic
-                    visual_context = self.dynamic_prompts
+                elif "D" in self.prompting_type:
+                    if isinstance(self.dynamic_prompts, torch.Tensor):
+                        if self.dynamic_prompts.shape[0] != x.shape[1]:
+                            dynamic_prompts_expanded = self.dynamic_prompts[0:1].expand(
+                                x.shape[1], -1, -1
+                            )
+                        else:
+                            dynamic_prompts_expanded = self.dynamic_prompts
+                    else:
+                        dynamic_prompts_expanded = self.dynamic_prompts
+                    visual_context = dynamic_prompts_expanded
                 else:
-                    print('You should at least choose one type of prompts when the prompting branches are not none.')
-                    raise NotImplementedError
+                    raise NotImplementedError("You should choose at least one type of prompts.")
 
-
-            if indx == 0:  # for the first layer
+            if indx == 0:
                 visual_context = visual_context.permute(1, 0, 2).half()
                 x = torch.cat([x, visual_context], dim=0)
             else:
-                if indx < self.depth:  # replace with learnalbe tokens
-                    prefix = x[0:x.shape[0] - length, :, :]
+                if indx < self.depth:
+                    prefix = x[0 : x.shape[0] - length, :, :]
                     visual_context = visual_context.permute(1, 0, 2).half()
                     x = torch.cat([prefix, visual_context], dim=0)
-                else:  # keep the same
+                else:
                     x = x
         else:
             x = x
 
-        x, attn_tmp = resblock(q_x=x, k_x=k_x, v_x= v_x, attn_mask=attn_mask)
+        x, attn_tmp = resblock(q_x=x, k_x=k_x, v_x=v_x, attn_mask=attn_mask)
 
         if self.enabled:
-            tokens = x[:x.shape[0] - length, :, :]
+            tokens = x[: x.shape[0] - length, :, :]
         else:
             tokens = x
 
