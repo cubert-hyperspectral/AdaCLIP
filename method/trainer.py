@@ -3,7 +3,7 @@ import torchvision.transforms as transforms
 from scipy.ndimage import gaussian_filter
 
 from loss import FocalLoss, BinaryDiceLoss
-from tools import visualization, calculate_metric, calculate_average_metric
+from adaclip_tools import visualization, calculate_metric, calculate_average_metric
 from .adaclip import *
 from .custom_clip import create_model_and_transforms
 
