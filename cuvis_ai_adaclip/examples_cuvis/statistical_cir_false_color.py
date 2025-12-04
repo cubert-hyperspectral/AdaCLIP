@@ -20,7 +20,7 @@ from cuvis_ai.node.band_selection import CIRFalseColorSelector
 from cuvis_ai.node.data import LentilsAnomalyDataNode
 from cuvis_ai.node.metrics import AnomalyDetectionMetrics
 from cuvis_ai.node.monitor import TensorBoardMonitorNode
-from cuvis_ai.node.visualizations import AnomalyMask, ScoreHeatmapVisualizer
+from cuvis_ai.node.visualizations import RGBAnomalyMask, ScoreHeatmapVisualizer
 from cuvis_ai.pipeline.canvas import CuvisCanvas
 from cuvis_ai.training import StatisticalTrainer
 from loguru import logger
@@ -157,7 +157,7 @@ def main(cfg: DictConfig) -> None:
     decider = QuantileBinaryDecider(quantile=quantile)
     standard_metrics = AnomalyDetectionMetrics(name="detection_metrics")
     score_viz = ScoreHeatmapVisualizer(normalize_scores=True, up_to=3)
-    mask_viz = AnomalyMask(channel=mask_channel, up_to=3)
+    mask_viz = RGBAnomalyMask(up_to=3)
     monitor = TensorBoardMonitorNode(
         run_name=canvas_name,
         output_dir=str(monitor_root),
@@ -179,7 +179,7 @@ def main(cfg: DictConfig) -> None:
         (data_node.outputs.mask, standard_metrics.inputs.targets),
         (decider.outputs.decisions, mask_viz.inputs.decisions),
         (data_node.outputs.mask, mask_viz.inputs.mask),
-        (data_node.outputs.cube, mask_viz.inputs.cube),
+        (band_selector.outputs.rgb_image, mask_viz.inputs.rgb_image),
         # send metrics + artifacts to TensorBoard
         (standard_metrics.outputs.metrics, monitor.inputs.metrics),
         (score_viz.outputs.artifacts, monitor.inputs.artifacts),
