@@ -121,7 +121,7 @@ def main(cfg: DictConfig) -> None:
     datamodule = SingleCu3sDataModule(
         data_dir=str(data_root),
         dataset_name="Lentils",
-        batch_size=3,  # Match cuvis.ai example
+        batch_size=1,  # Match cuvis.ai example
         train_ids=train_ids,
         val_ids=val_ids,
         test_ids=test_ids,
@@ -186,6 +186,7 @@ def main(cfg: DictConfig) -> None:
         (mask_viz.outputs.artifacts, monitor.inputs.artifacts),
     )
 
+    canvas.to("cuda")
     # ----------------------------
     # Visualize and run
     # ----------------------------

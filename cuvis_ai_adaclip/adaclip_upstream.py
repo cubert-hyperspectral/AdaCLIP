@@ -8,6 +8,7 @@ this repository (``method/*.py``) instead of any code inside ``cuvis_ai``.
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import torch
 from loguru import logger
@@ -194,8 +195,13 @@ class AdaCLIPModel(nn.Module):
         cls_name = [prompt] if prompt else [""]
 
         # Run AdaCLIP in batched mode (matching cuvis.ai behavior)
+        start_time = time.time()
         with torch.no_grad():
             anomaly_map, anomaly_score = self._clip_model(image, cls_name, aggregation=aggregation)
+        elapsed = time.time() - start_time
+
+        # Log inference time for visibility
+        logger.info(f"[cuvis_ai_adaclip] AdaCLIP inference time: {elapsed:.3f}s")
 
         # Ensure anomaly_score is 1D [B]
         if anomaly_score.dim() > 1:
