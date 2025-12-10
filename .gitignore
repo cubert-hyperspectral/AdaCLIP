@@ -9,3 +9,4 @@ __pycache__/
 .venv/
 /weights/
 /outputs/
+/lightning_logs/

@@ -104,8 +104,11 @@ class AdaCLIPDetector(Node):
         # Download weights if not cached
         weight_path = download_weights(self.weight_name)
 
-        # Determine device from current module parameters/buffers or default
-        device: str | torch.device | None = None
+        # Determine device from current module parameters/buffers or default.
+        # IMPORTANT: do not override the node's device here. The canvas/trainer
+        # is responsible for moving the whole graph (including this node) to
+        # CPU/GPU via `.to(device)`, and this node should respect that.
+        device: torch.device | None = None
         for param in self.parameters():
             device = param.device
             break
@@ -114,9 +117,9 @@ class AdaCLIPDetector(Node):
                 device = buf.device
                 break
         if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Create and register the model as a submodule
+        # Create and register the model as a submodule, on the same device as this node
         model = AdaCLIPModel(
             backbone=self.backbone,
             image_size=self.image_size,
