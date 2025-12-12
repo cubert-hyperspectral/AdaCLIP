@@ -21,6 +21,7 @@ from PIL import Image
 from torchvision.transforms import Compose
 
 from cuvis_ai_adaclip.adaclip_upstream import AdaCLIPModel, download_weights
+from loguru import logger
 
 
 class AdaCLIPDetector(Node):
@@ -65,6 +66,8 @@ class AdaCLIPDetector(Node):
         prompting_depth: int = 4,
         prompting_length: int = 5,
         gaussian_sigma: float = 4.0,
+        use_half_precision: bool = True,  # Enable FP16 for faster inference
+        enable_warmup: bool = True,  # Warmup runs to optimize CUDA kernels
         **kwargs: Any,
     ) -> None:
         # Pass all serializable arguments to super().__init__ for proper hparams capture
@@ -76,6 +79,8 @@ class AdaCLIPDetector(Node):
             prompting_depth=prompting_depth,
             prompting_length=prompting_length,
             gaussian_sigma=gaussian_sigma,
+            use_half_precision=use_half_precision,
+            enable_warmup=enable_warmup,
             **kwargs,
         )
 
@@ -86,6 +91,9 @@ class AdaCLIPDetector(Node):
         self.prompting_depth = prompting_depth
         self.prompting_length = prompting_length
         self.gaussian_sigma = gaussian_sigma
+        self.use_half_precision = use_half_precision
+        self.enable_warmup = enable_warmup
+        self._warmup_done = False
 
         # Lazy initialization - will be registered as submodule when loaded
         self._adaclip_model: AdaCLIPModel | None = None
@@ -96,56 +104,88 @@ class AdaCLIPDetector(Node):
             "_initialized_flag", torch.tensor(False, dtype=torch.bool), persistent=True
         )
 
+    @property
+    def current_device(self) -> torch.device:
+        """Discover current device from module parameters/buffers."""
+        for param in self.parameters():
+            return param.device
+        for buf in self.buffers():
+            return buf.device
+        return torch.device("cpu")
+
     def _ensure_model_loaded(self) -> None:
-        """Lazy load model on first forward pass."""
+        """Lazy load model on first forward pass.
+
+        The model is created and then moved to the current device of this node.
+        Subsequent .to() calls on the pipeline will move the registered submodule.
+        """
         if self._adaclip_model is not None:
             return
 
         # Download weights if not cached
         weight_path = download_weights(self.weight_name)
 
-        # Determine device from current module parameters/buffers or default.
-        # IMPORTANT: do not override the node's device here. The canvas/trainer
-        # is responsible for moving the whole graph (including this node) to
-        # CPU/GPU via `.to(device)`, and this node should respect that.
-        device: torch.device | None = None
-        for param in self.parameters():
-            device = param.device
-            break
-        if device is None:
-            for buf in self.buffers():
-                device = buf.device
-                break
-        if device is None:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Get current device from this node's tensors
+        device = self.current_device
 
-        # Create and register the model as a submodule, on the same device as this node
+        # Create model with device hint for initial creation
         model = AdaCLIPModel(
             backbone=self.backbone,
             image_size=self.image_size,
             prompting_depth=self.prompting_depth,
             prompting_length=self.prompting_length,
-            device=str(device),
+            device=str(device),  # Initial device hint
         )
         model.load_weights(weight_path)
         model.eval()
 
+        # Register as a submodule so it moves with .to() calls on the pipeline
+        # Using add_module ensures it's part of the module tree
+        self.add_module("adaclip_model", model)
         self._adaclip_model = model
         self._preprocess = model.get_preprocess()
         self._initialized_flag.fill_(True)
+
+        # Debug: Log device information
+        model_device = next(self._adaclip_model.parameters()).device if list(self._adaclip_model.parameters()) else torch.device("cpu")
+        logger.info(f"[AdaCLIPDetector] Model initialized on device: {model_device}")
+        logger.info(f"[AdaCLIPDetector] CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            logger.info(f"[AdaCLIPDetector] CUDA device: {torch.cuda.get_device_name(0)}")
+
+        # Apply optimizations after model is loaded
+        if self.use_half_precision and torch.cuda.is_available():
+            try:
+                logger.info("[AdaCLIPDetector] Converting model to half precision (FP16) for faster inference...")
+                self._adaclip_model = self._adaclip_model.half()
+                if hasattr(self._adaclip_model, "_clip_model") and self._adaclip_model._clip_model is not None:
+                    self._adaclip_model._clip_model = self._adaclip_model._clip_model.half()
+                logger.info("[AdaCLIPDetector] ✅ Model converted to FP16")
+            except Exception as e:
+                logger.warning(f"[AdaCLIPDetector] ⚠️  FP16 conversion failed: {e}, continuing with FP32")
+                self.use_half_precision = False
+
+        # Enable cuDNN benchmarking for consistent input sizes
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
 
     def _preprocess_rgb(self, rgb_bhwc: torch.Tensor) -> torch.Tensor:
         """Preprocess RGB tensor for model input.
 
         Converts BHWC tensor to preprocessed BCHW tensor suitable for the model.
-        The output tensor is created on the same device as the AdaCLIP model.
+        The preprocessing goes through PIL (CPU), then the output tensor is
+        moved to the same device as this node's parameters.
+
+        NOTE: This is a legitimate .to() call because we're converting from
+        numpy/PIL space back to tensor space. The device is discovered
+        dynamically from the model's parameters, not from a stored attribute.
         """
         if self._preprocess is None:
             raise RuntimeError("AdaCLIPDetector model not initialized")
 
         b = rgb_bhwc.shape[0]
 
-        # Convert to uint8 numpy for PIL processing
+        # Convert to uint8 numpy for PIL processing (happens on CPU)
         rgb_np = rgb_bhwc.detach().cpu().numpy()
 
         # Handle different input ranges
@@ -154,7 +194,7 @@ class AdaCLIPDetector(Node):
         else:
             rgb_np = rgb_np.astype(np.uint8)
 
-        # Process each image through CLIP preprocessing
+        # Process each image through CLIP preprocessing (creates CPU tensors)
         preprocessed = []
         for i in range(b):
             pil_img = Image.fromarray(rgb_np[i], mode="RGB")
@@ -162,7 +202,11 @@ class AdaCLIPDetector(Node):
             preprocessed.append(img_tensor)
 
         batch_tensor = torch.stack(preprocessed, dim=0)
-        return batch_tensor
+
+        # Move to the model's device (dynamically discovered from parameters)
+        # This is necessary because PIL preprocessing creates CPU tensors
+        target_device = self.current_device
+        return batch_tensor.to(target_device)
 
     def forward(
         self,
@@ -183,15 +227,94 @@ class AdaCLIPDetector(Node):
         b, h, w, _ = rgb_image.shape
 
         # Preprocess images
+        import time
+        
+        # Debug: Log input device
+        logger.debug(f"[AdaCLIPDetector] Input rgb_image device: {rgb_image.device}, dtype: {rgb_image.dtype}, shape: {rgb_image.shape}")
+        
+        preprocess_start = time.perf_counter()
         img_tensor = self._preprocess_rgb(rgb_image)
+        
+        # Debug: Log preprocessed tensor device
+        logger.debug(f"[AdaCLIPDetector] Preprocessed img_tensor device: {img_tensor.device}, dtype: {img_tensor.dtype}, shape: {img_tensor.shape}")
+        
+        # Convert to half precision if enabled
+        if self.use_half_precision and torch.cuda.is_available():
+            img_tensor = img_tensor.half()
+            logger.debug(f"[AdaCLIPDetector] Converted to FP16, new dtype: {img_tensor.dtype}")
+        
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        preprocess_end = time.perf_counter()
+        preprocess_time_ms = (preprocess_end - preprocess_start) * 1000.0
+        
+        # Debug: Log model device
+        if self._adaclip_model is not None:
+            model_params = list(self._adaclip_model.parameters())
+            if model_params:
+                model_device = model_params[0].device
+                model_dtype = model_params[0].dtype
+                logger.debug(f"[AdaCLIPDetector] Model device: {model_device}, dtype: {model_dtype}")
+
+        # Warmup runs (only once, on first forward pass)
+        if self.enable_warmup and not self._warmup_done and torch.cuda.is_available():
+            logger.info("[AdaCLIPDetector] 🔥 Running warmup inference to optimize CUDA kernels...")
+            try:
+                with torch.no_grad():
+                    if self.use_half_precision:
+                        with torch.cuda.amp.autocast():
+                            _ = self._adaclip_model.predict(
+                                img_tensor[:1] if img_tensor.shape[0] > 1 else img_tensor,
+                                prompt=self.prompt_text,
+                                sigma=self.gaussian_sigma,
+                            )
+                    else:
+                        _ = self._adaclip_model.predict(
+                            img_tensor[:1] if img_tensor.shape[0] > 1 else img_tensor,
+                            prompt=self.prompt_text,
+                            sigma=self.gaussian_sigma,
+                        )
+                    torch.cuda.synchronize()
+                self._warmup_done = True
+                logger.info("[AdaCLIPDetector] ✅ Warmup complete")
+            except Exception as e:
+                logger.warning(f"[AdaCLIPDetector] ⚠️  Warmup failed: {e}, continuing without warmup")
 
         # Run inference
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        inference_start = time.perf_counter()
         with torch.no_grad():
-            anomaly_map, anomaly_score = self._adaclip_model.predict(
-                img_tensor,
-                prompt=self.prompt_text,
-                sigma=self.gaussian_sigma,
-            )
+            # Use autocast for additional speedup (works with FP16)
+            if self.use_half_precision and torch.cuda.is_available():
+                with torch.cuda.amp.autocast():
+                    anomaly_map, anomaly_score = self._adaclip_model.predict(
+                        img_tensor,
+                        prompt=self.prompt_text,
+                        sigma=self.gaussian_sigma,
+                    )
+            else:
+                anomaly_map, anomaly_score = self._adaclip_model.predict(
+                    img_tensor,
+                    prompt=self.prompt_text,
+                    sigma=self.gaussian_sigma,
+                )
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        inference_end = time.perf_counter()
+        inference_time_ms = (inference_end - inference_start) * 1000.0
+        
+        # Debug: Log output device (before conversion)
+        logger.debug(f"[AdaCLIPDetector] Output anomaly_map device: {anomaly_map.device}, dtype: {anomaly_map.dtype}, shape: {anomaly_map.shape}")
+        logger.debug(f"[AdaCLIPDetector] Output anomaly_score device: {anomaly_score.device}, dtype: {anomaly_score.dtype}, shape: {anomaly_score.shape}")
+        
+        logger.info(
+            f"[AdaCLIPDetector] Batch size={b}, "
+            f"preprocess={preprocess_time_ms:.1f}ms, "
+            f"inference={inference_time_ms:.1f}ms, "
+            f"per_image={inference_time_ms/b:.1f}ms, "
+            f"device={img_tensor.device}, dtype={img_tensor.dtype}"
+        )
 
         # Resize anomaly map back to original size if needed
         if anomaly_map.shape[1] != h or anomaly_map.shape[2] != w:
@@ -203,6 +326,18 @@ class AdaCLIPDetector(Node):
             ).squeeze(1)  # [B, H, W]
 
         scores = anomaly_map.unsqueeze(-1)  # [B, H, W, 1]
+
+        # Convert outputs back to FP32 for compatibility with downstream nodes
+        # This allows FP16 computation internally for speed while maintaining FP32 interface
+        # NOTE: This conversion is necessary because OUTPUT_SPECS specifies float32, and
+        # downstream nodes (decider, visualizers) expect float32 inputs.
+        if scores.dtype == torch.float16:
+            scores = scores.float()
+        if anomaly_score.dtype == torch.float16:
+            anomaly_score = anomaly_score.float()
+        
+        # Debug: Log final output dtype after conversion
+        logger.debug(f"[AdaCLIPDetector] Final scores dtype: {scores.dtype}, anomaly_score dtype: {anomaly_score.dtype}")
 
         return {
             "scores": scores,
