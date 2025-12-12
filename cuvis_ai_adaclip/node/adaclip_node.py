@@ -10,6 +10,7 @@ This node is a **self-contained** AdaCLIP integration that:
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import numpy as np
@@ -227,38 +228,15 @@ class AdaCLIPDetector(Node):
         b, h, w, _ = rgb_image.shape
 
         # Preprocess images
-        import time
-        
-        # Debug: Log input device
-        logger.debug(f"[AdaCLIPDetector] Input rgb_image device: {rgb_image.device}, dtype: {rgb_image.dtype}, shape: {rgb_image.shape}")
-        
-        preprocess_start = time.perf_counter()
         img_tensor = self._preprocess_rgb(rgb_image)
-        
-        # Debug: Log preprocessed tensor device
-        logger.debug(f"[AdaCLIPDetector] Preprocessed img_tensor device: {img_tensor.device}, dtype: {img_tensor.dtype}, shape: {img_tensor.shape}")
         
         # Convert to half precision if enabled
         if self.use_half_precision and torch.cuda.is_available():
             img_tensor = img_tensor.half()
-            logger.debug(f"[AdaCLIPDetector] Converted to FP16, new dtype: {img_tensor.dtype}")
-        
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        preprocess_end = time.perf_counter()
-        preprocess_time_ms = (preprocess_end - preprocess_start) * 1000.0
-        
-        # Debug: Log model device
-        if self._adaclip_model is not None:
-            model_params = list(self._adaclip_model.parameters())
-            if model_params:
-                model_device = model_params[0].device
-                model_dtype = model_params[0].dtype
-                logger.debug(f"[AdaCLIPDetector] Model device: {model_device}, dtype: {model_dtype}")
 
         # Warmup runs (only once, on first forward pass)
         if self.enable_warmup and not self._warmup_done and torch.cuda.is_available():
-            logger.info("[AdaCLIPDetector] 🔥 Running warmup inference to optimize CUDA kernels...")
+            logger.info("[AdaCLIPDetector]  Running warmup inference to optimize CUDA kernels...")
             try:
                 with torch.no_grad():
                     if self.use_half_precision:
@@ -276,9 +254,9 @@ class AdaCLIPDetector(Node):
                         )
                     torch.cuda.synchronize()
                 self._warmup_done = True
-                logger.info("[AdaCLIPDetector] ✅ Warmup complete")
+                logger.info("[AdaCLIPDetector]  Warmup complete")
             except Exception as e:
-                logger.warning(f"[AdaCLIPDetector] ⚠️  Warmup failed: {e}, continuing without warmup")
+                logger.warning(f"[AdaCLIPDetector]   Warmup failed: {e}, continuing without warmup")
 
         # Run inference
         if torch.cuda.is_available():
@@ -304,16 +282,9 @@ class AdaCLIPDetector(Node):
         inference_end = time.perf_counter()
         inference_time_ms = (inference_end - inference_start) * 1000.0
         
-        # Debug: Log output device (before conversion)
-        logger.debug(f"[AdaCLIPDetector] Output anomaly_map device: {anomaly_map.device}, dtype: {anomaly_map.dtype}, shape: {anomaly_map.shape}")
-        logger.debug(f"[AdaCLIPDetector] Output anomaly_score device: {anomaly_score.device}, dtype: {anomaly_score.dtype}, shape: {anomaly_score.shape}")
-        
         logger.info(
-            f"[AdaCLIPDetector] Batch size={b}, "
-            f"preprocess={preprocess_time_ms:.1f}ms, "
-            f"inference={inference_time_ms:.1f}ms, "
-            f"per_image={inference_time_ms/b:.1f}ms, "
-            f"device={img_tensor.device}, dtype={img_tensor.dtype}"
+            f"[AdaCLIPDetector] Inference time: {inference_time_ms:.1f}ms "
+            f"(batch_size={b}, per_image={inference_time_ms/b:.1f}ms)"
         )
 
         # Resize anomaly map back to original size if needed
@@ -335,9 +306,6 @@ class AdaCLIPDetector(Node):
             scores = scores.float()
         if anomaly_score.dtype == torch.float16:
             anomaly_score = anomaly_score.float()
-        
-        # Debug: Log final output dtype after conversion
-        logger.debug(f"[AdaCLIPDetector] Final scores dtype: {scores.dtype}, anomaly_score dtype: {anomaly_score.dtype}")
 
         return {
             "scores": scores,

@@ -236,15 +236,6 @@ class AdaCLIPModel(nn.Module):
         # NOTE: Removed image.to(self.device) - input must already be on correct device
         # The pipeline.to(device) call handles device placement for all tensors
 
-        # Debug: Log input device and model device
-        logger.debug(f"[AdaCLIPModel.predict] Input image device: {image.device}, dtype: {image.dtype}, shape: {image.shape}")
-        if self._clip_model is not None:
-            model_params = list(self._clip_model.parameters())
-            if model_params:
-                model_device = model_params[0].device
-                model_dtype = model_params[0].dtype
-                logger.debug(f"[AdaCLIPModel.predict] Model device: {model_device}, dtype: {model_dtype}")
-
         # Use empty string as prompt if not provided
         cls_name = [prompt] if prompt else [""]
 
