@@ -1,7 +1,8 @@
 from typing import Union, List, Optional
 import numpy as np
 import torch
-from pkg_resources import packaging
+#from pkg_resources import packaging
+import packaging
 from torch import nn
 from torch.nn import functional as F
 from .clip_model import CLIP
@@ -441,7 +442,21 @@ class AdaCLIP(nn.Module):
             self.HSF = HybridSemanticFusion(k_clusters)
 
         self.image_size = image_size
-        self.device = device
+        # Store initial device hint but prefer using current_device property
+        self._init_device = device
+
+    @property
+    def device(self) -> str:
+        """Dynamically discover device from model parameters.
+
+        This ensures correct device after .to() calls on the model or pipeline.
+        Falls back to the init device hint if no parameters exist yet.
+        """
+        for param in self.parameters():
+            return str(param.device)
+        for buf in self.buffers():
+            return str(buf.device)
+        return self._init_device
 
     def generate_and_set_dynamic_promtps(self, image):
         with torch.no_grad():

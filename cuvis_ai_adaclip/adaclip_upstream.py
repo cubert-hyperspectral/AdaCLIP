@@ -32,6 +32,10 @@ class AdaCLIPModel(nn.Module):
     This class wraps the upstream AdaCLIP implementation and provides a
     simplified interface for inference. It handles model loading,
     preprocessing, and inference.
+
+    NOTE: This model follows the cuvis.ai convention of NOT calling .to(device)
+    inside forward/predict. Device placement is handled externally by calling
+    .to(device) on the model or the containing pipeline.
     """
 
     def __init__(
@@ -45,7 +49,7 @@ class AdaCLIPModel(nn.Module):
         use_hsf: bool = True,
         k_clusters: int = 20,
         output_layers: list[int] | None = None,
-        device: str | None = None,
+        device: str | None = None,  # Kept for backward compat but prefer using .to()
     ) -> None:
         super().__init__()
 
@@ -59,28 +63,55 @@ class AdaCLIPModel(nn.Module):
         self.k_clusters = k_clusters
         self.output_layers = output_layers or [6, 12, 18, 24]
 
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.device = device
+        # Store initial device hint (used only during lazy init if no tensors exist yet)
+        self._init_device_hint = device
 
         self._clip_model: AdaCLIP | None = None
         self._model: AdaCLIP | None = None
         self._preprocess: Compose | None = None
         self._initialized = False
 
+    @property
+    def device(self) -> torch.device:
+        """Discover current device from model parameters/buffers.
+
+        This property dynamically queries the device from the model's tensors,
+        ensuring correct device after .to() calls on the model or pipeline.
+        """
+        # First check if we have any parameters
+        for param in self.parameters():
+            return param.device
+        # Then check buffers
+        for buf in self.buffers():
+            return buf.device
+        # Fallback to init hint or CPU
+        if self._init_device_hint is not None:
+            return torch.device(self._init_device_hint)
+        return torch.device("cpu")
+
     def _init_model(self) -> None:
-        """Initialize the CLIP backbone and AdaCLIP model."""
+        """Initialize the CLIP backbone and AdaCLIP model.
+
+        The model is initialized on the current device (discovered from existing
+        tensors or using the init hint). After initialization, the model can be
+        moved to a different device using .to(device).
+        """
         if self._initialized:
             return
 
-        logger.info(f"[cuvis_ai_adaclip] Initializing AdaCLIP with {self.backbone} backbone...")
+        # Determine device for initialization
+        init_device = self.device  # Uses the dynamic property
+        device_str = str(init_device)
+
+        logger.info(f"[cuvis_ai_adaclip] Initializing AdaCLIP with {self.backbone} backbone on {device_str}...")
 
         # Create CLIP model and transforms using upstream helpers
+        # NOTE: create_model_and_transforms creates tensors on the specified device
         clip_model, preprocess_train, preprocess_val = create_model_and_transforms(
             model_name=self.backbone,
             img_size=self.image_size,
             pretrained="openai",
-            device=self.device,
+            device=device_str,
         )
 
         # Match the behavior of the trainer: use fixed-size Resize and CenterCrop
@@ -101,6 +132,7 @@ class AdaCLIPModel(nn.Module):
         visual_channel = model_cfg["vision_cfg"]["width"]
 
         # Instantiate AdaCLIP as in the upstream training code
+        # NOTE: AdaCLIP stores device internally but we'll update it to use dynamic discovery
         self._clip_model = AdaCLIP(
             freeze_clip=clip_model,
             text_channel=text_channel,
@@ -112,16 +144,22 @@ class AdaCLIPModel(nn.Module):
             use_hsf=self.use_hsf,
             k_clusters=self.k_clusters,
             output_layers=self.output_layers,
-            device=self.device,
+            device=device_str,  # Initial device hint for AdaCLIP
             image_size=self.image_size,
         )
-        self._clip_model.to(self.device)
+
+        # Move all submodules (ProjectLayer, PromptLayer, etc.) to the correct device.
+        # This is initialization-time device placement, NOT forward-time movement.
+        # It ensures all newly created layers are on the same device as the CLIP backbone.
+        self._clip_model.to(init_device)
+
+        # Register as submodule so it moves with subsequent .to() calls on the parent
         self._model = self._clip_model
 
         self._preprocess = preprocess_val
         self._initialized = True
 
-        logger.info(f"[cuvis_ai_adaclip] AdaCLIP initialized on {self.device}")
+        logger.info(f"[cuvis_ai_adaclip] AdaCLIP initialized on {device_str}")
 
     def load_weights(self, weight_path: str | Path) -> None:
         """Load pretrained AdaCLIP weights from a checkpoint file."""
@@ -176,32 +214,55 @@ class AdaCLIPModel(nn.Module):
         Parameters
         ----------
         image :
-            Preprocessed image tensor ``[B, C, H, W]``.
+            Preprocessed image tensor ``[B, C, H, W]``. Must already be on the
+            same device as the model (use pipeline.to(device) to move everything).
         prompt :
             Text prompt describing the object class.
         sigma :
             Gaussian smoothing sigma for the anomaly map.
         aggregation :
             Whether to aggregate multi-scale features.
+
+        NOTE: This method does NOT call .to(device) on the input. The caller
+        is responsible for ensuring the input is on the correct device.
+        This follows cuvis.ai conventions where pipeline.to(device) handles
+        all device placement.
         """
         self._init_model()
 
         if not self._initialized:
             raise RuntimeError("Model not initialized. Call load_weights() first.")
 
-        image = image.to(self.device)
+        # NOTE: Removed image.to(self.device) - input must already be on correct device
+        # The pipeline.to(device) call handles device placement for all tensors
+
+        # Debug: Log input device and model device
+        logger.debug(f"[AdaCLIPModel.predict] Input image device: {image.device}, dtype: {image.dtype}, shape: {image.shape}")
+        if self._clip_model is not None:
+            model_params = list(self._clip_model.parameters())
+            if model_params:
+                model_device = model_params[0].device
+                model_dtype = model_params[0].dtype
+                logger.debug(f"[AdaCLIPModel.predict] Model device: {model_device}, dtype: {model_dtype}")
 
         # Use empty string as prompt if not provided
         cls_name = [prompt] if prompt else [""]
 
         # Run AdaCLIP in batched mode (matching cuvis.ai behavior)
         start_time = time.time()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        inference_start = time.perf_counter()
         with torch.no_grad():
             anomaly_map, anomaly_score = self._clip_model(image, cls_name, aggregation=aggregation)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        inference_end = time.perf_counter()
         elapsed = time.time() - start_time
+        inference_time_ms = (inference_end - inference_start) * 1000.0
 
         # Log inference time for visibility
-        logger.info(f"[cuvis_ai_adaclip] AdaCLIP inference time: {elapsed:.3f}s")
+        logger.info(f"[cuvis_ai_adaclip] AdaCLIP inference time: {elapsed:.3f}s ({inference_time_ms:.1f}ms), batch_size={image.shape[0]}, per_image={inference_time_ms/image.shape[0]:.1f}ms")
 
         # Ensure anomaly_score is 1D [B]
         if anomaly_score.dim() > 1:

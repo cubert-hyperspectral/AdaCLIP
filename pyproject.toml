@@ -56,7 +56,8 @@ py-modules = ["loss"]
 include = ["method*", "dataset*", "adaclip_tools*", "cuvis_ai_adaclip*"]
 
 [tool.uv.sources]
-cuvis_ai = { path = "../cuvis.ai", editable = true }
+# only use when building adaclip examples inside this repo to install cuvis ai in the env
+# cuvis_ai = { path = "../cuvis.ai", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 
