@@ -7,6 +7,7 @@ operate on the plugin package that lives inside the forked AdaCLIP repo.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -147,6 +148,57 @@ class TestAdaCLIPDetectorNode:
         assert "scores" in result
         assert "anomaly_score" in result
 
+    def test_detector_preprocess_handles_uint8_input(self) -> None:
+        """Test that AdaCLIPDetector handles uint8 RGB inputs (0-255 range)."""
+        detector = AdaCLIPDetector()
+
+        # Mock preprocessing and model to avoid downloading weights
+        detector._preprocess = MagicMock(
+            return_value=torch.rand(1, 3, 518, 518)
+        )  # type: ignore[assignment]
+
+        mock_model = MagicMock()
+        mock_model.device = torch.device("cpu")
+        mock_model.predict.return_value = (
+            torch.rand(1, 32, 32),
+            torch.tensor([0.5]),
+        )
+        detector._adaclip_model = mock_model  # type: ignore[assignment]
+
+        # Uint8 input in 0-255 range
+        rgb_uint8 = torch.randint(0, 256, (1, 64, 64, 3), dtype=torch.uint8)
+        result = detector.forward(rgb_image=rgb_uint8)
+        assert "scores" in result
+        assert "anomaly_score" in result
+
+    def test_detector_outputs_on_model_device(self) -> None:
+        """Test that AdaCLIPDetector returns outputs on the model's device.
+
+        Device placement is handled by cuvis.ai's pipeline.to(); the node should not
+        move outputs to match the input device.
+        """
+        detector = AdaCLIPDetector()
+
+        # Mock the model to avoid downloading weights
+        mock_model = MagicMock()
+        mock_model.device = torch.device("cpu")
+        mock_model.predict.return_value = (
+            torch.rand(1, 32, 32, device="cpu"),
+            torch.tensor([0.5], device="cpu"),
+        )
+        detector._adaclip_model = mock_model  # type: ignore[assignment]
+        detector._preprocess = MagicMock(
+            return_value=torch.rand(1, 3, 518, 518)
+        )  # type: ignore[assignment]
+
+        # Input on CPU
+        rgb_input = torch.rand(1, 64, 64, 3, dtype=torch.float32)
+        result = detector.forward(rgb_image=rgb_input)
+
+        # Outputs should be on the model's device
+        assert result["scores"].device.type == "cpu"
+        assert result["anomaly_score"].device.type == "cpu"
+
 
 # ============================================================================
 # Core Model Wrapper Tests
@@ -179,30 +231,39 @@ class TestIntegrationWithCuvisAI:
     """Integration tests for AdaCLIPDetector with cuvis.ai pipeline components."""
 
     def test_band_selector_to_detector_pipeline(self) -> None:
-        """Test a simple BaselineFalseRGBSelector -> AdaCLIPDetector pipeline wiring."""
-        from cuvis_ai.node import BaselineFalseRGBSelector
-        from cuvis_ai.pipeline.canvas import CuvisCanvas
+        """Test a simple BaselineFalseRGBSelector -> AdaCLIPDetector pipeline wiring.
 
-        canvas = CuvisCanvas("test_band_to_adaclip_plugin")
+        Uses CuvisPipeline (current cuvis.ai API) instead of the legacy CuvisCanvas.
+        """
+        try:
+            from cuvis_ai.node import BaselineFalseRGBSelector
+            from cuvis_ai.pipeline.pipeline import CuvisPipeline
+        except Exception as exc:  # pragma: no cover - optional dependency
+            pytest.skip(f"cuvis.ai integration not available: {exc}")
+
+        pipeline = CuvisPipeline("test_band_to_adaclip_plugin")
 
         selector = BaselineFalseRGBSelector()
         detector = AdaCLIPDetector()
 
         # This should not raise any errors; just check PortSpec compatibility.
-        canvas.connect(
+        pipeline.connect(
             (selector.outputs.rgb_image, detector.inputs.rgb_image),
         )
 
-        # Check that nodes are in the canvas graph
-        assert len(list(canvas._graph.nodes())) == 2
+        # Check that nodes are in the pipeline graph
+        assert len(list(pipeline._graph.nodes())) == 2
 
     def test_canvas_with_baseline_strategy(self) -> None:
-        """Test canvas setup with baseline band selector and plugin AdaCLIPDetector."""
-        from cuvis_ai.node import BaselineFalseRGBSelector
-        from cuvis_ai.node.data import LentilsAnomalyDataNode
-        from cuvis_ai.pipeline.canvas import CuvisCanvas
+        """Test pipeline setup with baseline band selector and plugin AdaCLIPDetector."""
+        try:
+            from cuvis_ai.node import BaselineFalseRGBSelector
+            from cuvis_ai.node.data import LentilsAnomalyDataNode
+            from cuvis_ai.pipeline.pipeline import CuvisPipeline
+        except Exception as exc:  # pragma: no cover - optional dependency
+            pytest.skip(f"cuvis.ai integration not available: {exc}")
 
-        canvas = CuvisCanvas("test_baseline_adaclip_plugin")
+        pipeline = CuvisPipeline("test_baseline_adaclip_plugin")
         data_node = LentilsAnomalyDataNode(
             normal_class_ids=[0, 1],
             wavelengths=np.linspace(400, 900, 50),
@@ -210,10 +271,10 @@ class TestIntegrationWithCuvisAI:
         band_selector = BaselineFalseRGBSelector()
         detector = AdaCLIPDetector()
 
-        canvas.connect(
+        pipeline.connect(
             (data_node.outputs.cube, band_selector.inputs.cube),
             (data_node.outputs.wavelengths, band_selector.inputs.wavelengths),
             (band_selector.outputs.rgb_image, detector.inputs.rgb_image),
         )
 
-        assert len(list(canvas._graph.nodes())) == 3
+        assert len(list(pipeline._graph.nodes())) == 3
