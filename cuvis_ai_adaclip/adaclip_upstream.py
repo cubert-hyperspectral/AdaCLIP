@@ -208,6 +208,7 @@ class AdaCLIPModel(nn.Module):
         prompt: str = "",
         sigma: float = 4.0,
         aggregation: bool = True,
+        enable_gradients: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run anomaly detection on an image batch.
 
@@ -244,8 +245,18 @@ class AdaCLIPModel(nn.Module):
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         inference_start = time.perf_counter()
-        with torch.no_grad():
-            anomaly_map, anomaly_score = self._clip_model(image, cls_name, aggregation=aggregation)
+        # Allow caller to control whether gradients are tracked. By default we
+        # keep the original behavior (no gradients for inference), but for
+        # channel-selector training we can enable autograd and let gradients
+        # flow through AdaCLIP to upstream nodes while keeping AdaCLIP weights
+        # frozen.
+        ctx = torch.no_grad if not enable_gradients else torch.enable_grad
+        with ctx():
+            anomaly_map, anomaly_score = self._clip_model(
+                image,
+                cls_name,
+                aggregation=aggregation,
+            )
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         inference_end = time.perf_counter()

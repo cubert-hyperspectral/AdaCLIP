@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
+from contextlib import nullcontext
 
 import numpy as np
 import torch
@@ -21,7 +22,12 @@ from cuvis_ai.utils.types import Context
 from PIL import Image
 from torchvision.transforms import Compose
 
-from cuvis_ai_adaclip.adaclip_upstream import AdaCLIPModel, download_weights
+from cuvis_ai_adaclip.adaclip_upstream import (
+    AdaCLIPModel,
+    OPENAI_DATASET_MEAN,
+    OPENAI_DATASET_STD,
+    download_weights,
+)
 from loguru import logger
 
 
@@ -69,6 +75,7 @@ class AdaCLIPDetector(Node):
         gaussian_sigma: float = 4.0,
         use_half_precision: bool = True,  # Enable FP16 for faster inference
         enable_warmup: bool = True,  # Warmup runs to optimize CUDA kernels
+        enable_gradients: bool = False,  # If True, allow gradients to flow through AdaCLIP
         **kwargs: Any,
     ) -> None:
         # Pass all serializable arguments to super().__init__ for proper hparams capture
@@ -82,6 +89,7 @@ class AdaCLIPDetector(Node):
             gaussian_sigma=gaussian_sigma,
             use_half_precision=use_half_precision,
             enable_warmup=enable_warmup,
+            enable_gradients=enable_gradients,
             **kwargs,
         )
 
@@ -94,6 +102,7 @@ class AdaCLIPDetector(Node):
         self.gaussian_sigma = gaussian_sigma
         self.use_half_precision = use_half_precision
         self.enable_warmup = enable_warmup
+        self.enable_gradients = enable_gradients
         self._warmup_done = False
 
         # Lazy initialization - will be registered as submodule when loaded
@@ -140,6 +149,12 @@ class AdaCLIPDetector(Node):
         model.load_weights(weight_path)
         model.eval()
 
+        # Freeze AdaCLIP weights by default. Even when enable_gradients is True,
+        # we want gradients to flow THROUGH AdaCLIP to upstream nodes, but we
+        # don't want to update AdaCLIP parameters themselves.
+        for param in model.parameters():
+            param.requires_grad_(False)
+
         # Register as a submodule so it moves with .to() calls on the pipeline
         # Using add_module ensures it's part of the module tree
         self.add_module("adaclip_model", model)
@@ -173,41 +188,112 @@ class AdaCLIPDetector(Node):
     def _preprocess_rgb(self, rgb_bhwc: torch.Tensor) -> torch.Tensor:
         """Preprocess RGB tensor for model input.
 
-        Converts BHWC tensor to preprocessed BCHW tensor suitable for the model.
-        The preprocessing goes through PIL (CPU), then the output tensor is
-        moved to the same device as this node's parameters.
+        When ``enable_gradients`` is False (default), this method mirrors the
+        original behavior: it converts the tensor to a NumPy array, goes
+        through PIL, and applies the upstream CLIP preprocessing pipeline
+        (Compose of Resize/CenterCrop/ToTensor/Normalize).
 
-        NOTE: This is a legitimate .to() call because we're converting from
-        numpy/PIL space back to tensor space. The device is discovered
-        dynamically from the model's parameters, not from a stored attribute.
+        When ``enable_gradients`` is True, a fully differentiable preprocessing
+        path implemented in pure PyTorch is used instead. This:
+
+        - Keeps the inputs in tensor form (no detach / NumPy / PIL),
+        - Resizes and center-crops to ``self.image_size``,
+        - Normalizes using the OpenAI dataset statistics.
+
+        The differentiable path is designed to numerically approximate the
+        original preprocessing while allowing gradients to flow back to
+        upstream nodes (e.g., SoftChannelSelector) during training.
         """
         if self._preprocess is None:
             raise RuntimeError("AdaCLIPDetector model not initialized")
 
-        b = rgb_bhwc.shape[0]
+        # Non-differentiable, exact upstream behavior for standard inference
+        if not self.enable_gradients:
+            b = rgb_bhwc.shape[0]
 
-        # Convert to uint8 numpy for PIL processing (happens on CPU)
-        rgb_np = rgb_bhwc.detach().cpu().numpy()
+            # Convert to uint8 numpy for PIL processing (happens on CPU)
+            rgb_np = rgb_bhwc.detach().cpu().numpy()
 
-        # Handle different input ranges
-        if rgb_np.max() <= 1.0:
-            rgb_np = (rgb_np * 255).astype(np.uint8)
+            # Handle different input ranges
+            if rgb_np.max() <= 1.0:
+                rgb_np = (rgb_np * 255).astype(np.uint8)
+            else:
+                rgb_np = rgb_np.astype(np.uint8)
+
+            # Process each image through CLIP preprocessing (creates CPU tensors)
+            preprocessed = []
+            for i in range(b):
+                pil_img = Image.fromarray(rgb_np[i], mode="RGB")
+                img_tensor = self._preprocess(pil_img)
+                preprocessed.append(img_tensor)
+
+            batch_tensor = torch.stack(preprocessed, dim=0)
+
+            target_device = self.current_device
+            return batch_tensor.to(target_device)
+
+        # Differentiable preprocessing path for training mode
+        # rgb_bhwc: [B, H, W, 3], float32 in [0,1] or [0,255]
+        b, h, w, c = rgb_bhwc.shape
+        # assert c == 3, f"Expected 3 channels for RGB, got {c}"
+
+        # Normalize to [0,1]
+        rgb = rgb_bhwc
+        if rgb.max() > 1.0:
+            rgb = rgb / 255.0
+        rgb = torch.clamp(rgb, 0.0, 1.0)
+
+        # Convert to BCHW
+        rgb_bchw = rgb.permute(0, 3, 1, 2)  # [B, 3, H, W]
+
+        # Resize with preserved aspect ratio then center-crop to image_size
+        target_size = self.image_size
+
+        # Compute scale to make the smaller side == target_size, then crop center
+        in_h, in_w = h, w
+        if in_h == target_size and in_w == target_size:
+            resized = rgb_bchw
         else:
-            rgb_np = rgb_np.astype(np.uint8)
+            scale = target_size / min(in_h, in_w)
+            new_h = int(round(in_h * scale))
+            new_w = int(round(in_w * scale))
+            resized = torch.nn.functional.interpolate(
+                rgb_bchw,
+                size=(new_h, new_w),
+                mode="bilinear",
+                align_corners=False,
+            )
 
-        # Process each image through CLIP preprocessing (creates CPU tensors)
-        preprocessed = []
-        for i in range(b):
-            pil_img = Image.fromarray(rgb_np[i], mode="RGB")
-            img_tensor = self._preprocess(pil_img)
-            preprocessed.append(img_tensor)
+        _, _, rh, rw = resized.shape
+        top = max(0, (rh - target_size) // 2)
+        left = max(0, (rw - target_size) // 2)
+        bottom = top + target_size
+        right = left + target_size
+        cropped = resized[:, :, top:bottom, left:right]  # [B, 3, S, S]
 
-        batch_tensor = torch.stack(preprocessed, dim=0)
+        # If input is smaller than target_size in some dimension, pad reflectively
+        if cropped.shape[2] != target_size or cropped.shape[3] != target_size:
+            pad_h = max(0, target_size - cropped.shape[2])
+            pad_w = max(0, target_size - cropped.shape[3])
+            padding = (
+                pad_w // 2,
+                pad_w - pad_w // 2,
+                pad_h // 2,
+                pad_h - pad_h // 2,
+            )  # (left, right, top, bottom)
+            cropped = torch.nn.functional.pad(cropped, padding, mode="reflect")
+            cropped = cropped[:, :, :target_size, :target_size]
 
-        # Move to the model's device (dynamically discovered from parameters)
-        # This is necessary because PIL preprocessing creates CPU tensors
-        target_device = self.current_device
-        return batch_tensor.to(target_device)
+        # Normalize using OpenAI dataset mean/std
+        mean = torch.tensor(OPENAI_DATASET_MEAN, dtype=cropped.dtype, device=cropped.device).view(
+            1, 3, 1, 1
+        )
+        std = torch.tensor(OPENAI_DATASET_STD, dtype=cropped.dtype, device=cropped.device).view(
+            1, 3, 1, 1
+        )
+        normalized = (cropped - mean) / std
+
+        return normalized
 
     def forward(
         self,
@@ -262,7 +348,12 @@ class AdaCLIPDetector(Node):
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         inference_start = time.perf_counter()
-        with torch.no_grad():
+        # Gradients are disabled by default (inference mode). When
+        # enable_gradients=True, we allow autograd to track operations so that
+        # upstream nodes (e.g., channel selectors) can be trained using losses
+        # defined on AdaCLIP outputs, while AdaCLIP weights remain frozen.
+        grad_ctx = nullcontext if self.enable_gradients else torch.no_grad
+        with grad_ctx():
             # Use autocast for additional speedup (works with FP16)
             if self.use_half_precision and torch.cuda.is_available():
                 with torch.cuda.amp.autocast():
@@ -270,12 +361,14 @@ class AdaCLIPDetector(Node):
                         img_tensor,
                         prompt=self.prompt_text,
                         sigma=self.gaussian_sigma,
+                        enable_gradients=self.enable_gradients,
                     )
             else:
                 anomaly_map, anomaly_score = self._adaclip_model.predict(
                     img_tensor,
                     prompt=self.prompt_text,
                     sigma=self.gaussian_sigma,
+                    enable_gradients=self.enable_gradients,
                 )
         if torch.cuda.is_available():
             torch.cuda.synchronize()

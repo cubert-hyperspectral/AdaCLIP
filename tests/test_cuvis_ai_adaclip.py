@@ -137,6 +137,7 @@ class TestAdaCLIPDetectorNode:
                 prompt: str = "",
                 sigma: float = 4.0,
                 aggregation: bool = True,
+                enable_gradients: bool = False,  # NEW, default False
             ) -> tuple[torch.Tensor, torch.Tensor]:
                 return torch.rand(1, 32, 32), torch.tensor([0.5])
 
