@@ -67,7 +67,6 @@ class AdaCLIPModel(nn.Module):
         self._init_device_hint = device
 
         self._clip_model: AdaCLIP | None = None
-        self._model: AdaCLIP | None = None
         self._preprocess: Compose | None = None
         self._initialized = False
 
@@ -154,8 +153,7 @@ class AdaCLIPModel(nn.Module):
         self._clip_model.to(init_device)
 
         # Register as submodule so it moves with subsequent .to() calls on the parent
-        self._model = self._clip_model
-
+        # Note: We only use _clip_model (not _model) to avoid state_dict key confusion
         self._preprocess = preprocess_val
         self._initialized = True
 
@@ -189,7 +187,21 @@ class AdaCLIPModel(nn.Module):
         # The checkpoint keys may have 'clip_model.' prefix; our model expects keys without it.
         state_dict = {k.replace("clip_model.", ""): v for k, v in state_dict.items()}
 
-        missing, unexpected = self._clip_model.load_state_dict(state_dict, strict=False)  # type: ignore[arg-type]
+        # Handle backward compatibility: if saved weights have '_model' keys but current model uses '_clip_model',
+        # remap them. This can happen if weights were saved with an older version that used _model.
+        # Also handle the reverse: if saved weights have '_clip_model' but somehow expect '_model', remap that too.
+        remapped_state_dict = {}
+        for key, value in state_dict.items():
+            # If key contains '_model.' (but not '_clip_model.'), remap to '_clip_model.'
+            if "_model." in key and "_clip_model." not in key:
+                new_key = key.replace("_model.", "_clip_model.")
+                remapped_state_dict[new_key] = value
+                # Also keep original in case it's needed
+                remapped_state_dict[key] = value
+            else:
+                remapped_state_dict[key] = value
+
+        missing, unexpected = self._clip_model.load_state_dict(remapped_state_dict, strict=False)  # type: ignore[arg-type]
         if missing:
             logger.debug(f"[cuvis_ai_adaclip] Missing keys (first few): {missing[:5]}...")
         if unexpected:

@@ -220,7 +220,7 @@ class TestAdaCLIPModelWrapper:
 
         assert model.backbone == "ViT-L-14-336"
         assert model.image_size == 518
-        assert model._model is None  # Lazy initialization
+        assert model._clip_model is None  # Lazy initialization
 
 
 # ============================================================================
