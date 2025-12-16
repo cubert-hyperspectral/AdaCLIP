@@ -405,6 +405,43 @@ class AdaCLIPDetector(Node):
             "anomaly_score": anomaly_score,
         }
 
+    def load_state_dict(self, state_dict, strict: bool = True):
+        """Load state dict with key remapping for _clip_model/_model compatibility.
+        
+        Handles backward compatibility when saved weights use different attribute names.
+        The AdaCLIPModel wrapper now only uses _clip_model (not _model), but older
+        saved weights might have _model keys that need to be remapped.
+        """
+        # Create a remapped state_dict that handles both _clip_model and _model keys
+        remapped_state_dict = {}
+        for key, value in state_dict.items():
+            # If key has adaclip_model._model, remap to adaclip_model._clip_model
+            if "adaclip_model._model." in key:
+                new_key = key.replace("adaclip_model._model.", "adaclip_model._clip_model.")
+                remapped_state_dict[new_key] = value
+                # Also keep original in case both exist
+                remapped_state_dict[key] = value
+            else:
+                remapped_state_dict[key] = value
+        
+        # Call parent load_state_dict with remapped keys
+        # Use strict=False to allow partial loading if some keys don't match
+        result = super().load_state_dict(remapped_state_dict, strict=False)
+        
+        # Log any remaining mismatches
+        if hasattr(result, "missing_keys") and result.missing_keys:
+            logger.warning(
+                f"[AdaCLIPDetector] Missing keys after remapping (first 5): "
+                f"{list(result.missing_keys)[:5]}..."
+            )
+        if hasattr(result, "unexpected_keys") and result.unexpected_keys:
+            logger.debug(
+                f"[AdaCLIPDetector] Unexpected keys (first 5): "
+                f"{list(result.unexpected_keys)[:5]}..."
+            )
+        
+        return result
+
     def load(self, params: dict, serial_dir: str) -> None:  # noqa: D401, ARG002
         """Legacy no-op; configuration is restored via constructor/state_dict elsewhere."""
         return
