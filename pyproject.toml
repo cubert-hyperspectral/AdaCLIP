@@ -55,6 +55,9 @@ py-modules = ["loss"]
 [tool.setuptools.packages.find]
 include = ["method*", "dataset*", "adaclip_tools*", "cuvis_ai_adaclip*"]
 
+[tool.setuptools.package-data]
+method = ["*.txt.gz"]
+
 [tool.uv.sources]
 # only use when building adaclip examples inside this repo to install cuvis ai in the env
 # cuvis_ai = { path = "../cuvis.ai", editable = true }
