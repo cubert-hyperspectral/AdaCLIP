@@ -10,7 +10,7 @@ import os
 import torch
 
 # Importing from local modules
-from tools import write2csv, setup_paths, setup_seed, log_metrics, Logger
+from adaclip_tools import write2csv, setup_paths, setup_seed, log_metrics, Logger
 from dataset import get_data
 from method import AdaCLIP_Trainer
 

@@ -1,189 +1,270 @@
-# AdaCLIP (Detecting Anomalies for Novel Categories)
-[![HuggingFace Space](https://img.shields.io/badge/🤗-HuggingFace%20Space-cyan.svg)](https://huggingface.co/spaces/Caoyunkang/AdaCLIP)
+# AdaCLIP Plugin for cuvis.ai
 
-> [**ECCV 24**] [**AdaCLIP: Adapting CLIP with Hybrid Learnable Prompts for Zero-Shot Anomaly Detection**](https://arxiv.org/abs/2407.15795).
->
-> by [Yunkang Cao](https://caoyunkang.github.io/), [Jiangning Zhang](https://zhangzjn.github.io/),  [Luca Frittoli](https://scholar.google.com/citations?user=cdML_XUAAAAJ), 
-> [Yuqi Cheng](https://scholar.google.com/citations?user=02BC-WgAAAAJ&hl=en), [Weiming Shen](https://scholar.google.com/citations?user=FuSHsx4AAAAJ&hl=en), [Giacomo Boracchi](https://boracchi.faculty.polimi.it/) 
-> 
+This repository provides a **cuvis.ai plugin** for [AdaCLIP](https://arxiv.org/abs/2407.15795), a zero-shot anomaly detection method that adapts CLIP with hybrid learnable prompts.
 
-## Introduction 
-Zero-shot anomaly detection (ZSAD) targets the identification of anomalies within images from arbitrary novel categories. 
-This study introduces AdaCLIP for the ZSAD task, leveraging a pre-trained vision-language model (VLM), CLIP. 
-AdaCLIP incorporates learnable prompts into CLIP and optimizes them through training on auxiliary annotated anomaly detection data. 
-Two types of learnable prompts are proposed: \textit{static} and \textit{dynamic}. Static prompts are shared across all images, serving to preliminarily adapt CLIP for ZSAD. 
-In contrast, dynamic prompts are generated for each test image, providing CLIP with dynamic adaptation capabilities. 
-The combination of static and dynamic prompts is referred to as hybrid prompts, and yields enhanced ZSAD performance. 
-Extensive experiments conducted across 14 real-world anomaly detection datasets from industrial and medical domains indicate that AdaCLIP outperforms other ZSAD methods and can generalize better to different categories and even domains. 
-Finally, our analysis highlights the importance of diverse auxiliary data and optimized prompts for enhanced generalization capacity.
+> **Note**: For the original AdaCLIP repository and training code, see [README_UPSTREAM.md](README_UPSTREAM.md).
 
-## Corrections
-- The description to the utilized training set in our paper is not accurate. By default, we utilize MVTec AD & ColonDB for training,
-and VisA & ClinicDB are utilized for evaluations on MVTec AD & ColonDB. 
+## Overview
 
-## Overview of AdaCLIP
-![overview](asset/framework.png)
+This plugin integrates AdaCLIP into the cuvis.ai framework, allowing you to:
 
-## 🛠️ Getting Started
+- Use AdaCLIP as a `Node` in cuvis.ai pipelines
+- Combine AdaCLIP with cuvis.ai's band selection nodes (CIR, supervised, etc.)
+- Run statistical training workflows with AdaCLIP
+- Visualize results via TensorBoard
 
-### Installation
-To set up the AdaCLIP environment, follow one of the methods below:
+## Installation
 
-- Clone this repo:
-  ```shell
-  git clone https://github.com/caoyunkang/AdaCLIP.git && cd AdaCLIP
-  ```
-- You can use our provided installation script for an automated setup::
-  ```shell
-  sh install.sh
-  ```
-- If you prefer to construct the experimental environment manually, follow these steps:
-  ```shell
-  conda create -n AdaCLIP python=3.9.5 -y
-  conda activate AdaCLIP
-  pip install torch==1.10.1+cu111 torchvision==0.11.2+cu111 torchaudio==0.10.1 -f https://download.pytorch.org/whl/cu111/torch_stable.html
-  pip install tqdm tensorboard setuptools==58.0.4 opencv-python scikit-image scikit-learn matplotlib seaborn ftfy regex numpy==1.26.4
-  pip install gradio # Optional, for app 
-  ```
-- Remember to update the dataset root in config.py according to your preference:
-  ```python
-  DATA_ROOT = '../datasets' # Original setting
-  ```
+### Prerequisites
 
-### Dataset Preparation 
-Please download our processed visual anomaly detection datasets to your `DATA_ROOT` as needed. 
+- Python 3.10-3.13
+- CUDA-capable GPU (recommended)
+- For local development: [cuvis.ai](https://github.com/cubert-hyperspectral/cuvis.ai) repository cloned at `../cuvis.ai` (relative to this repo)
 
-#### Industrial Visual Anomaly Detection Datasets
-Note: some links are still in processing...
+> **Note**: `cuvis_ai` is automatically installed as a dependency. The `pyproject.toml` is pre-configured with a path dependency (`[tool.uv.sources]`) that points to `../cuvis.ai` for local development.
 
-| Dataset | Google Drive | Baidu Drive | Task
-|------------|------------------|------------------| ------------------|
-| MVTec AD    | [Google Drive](https://drive.google.com/file/d/12IukAqxOj497J4F0Mel-FvaONM030qwP/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/1k36IMP4w32hY9BXOUM5ZmA?pwd=kxud) | Anomaly Detection & Localization |
-| VisA    | [Google Drive](https://drive.google.com/file/d/1U0MZVro5yGgaHNQ8kWb3U1a0Qlz4HiHI/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/15CIsP-ulZ1AN0_3quA068w?pwd=lmgc) | Anomaly Detection & Localization |
-| MPDD    | [Google Drive](https://drive.google.com/file/d/1cLkZs8pN8onQzfyNskeU_836JLjrtJz1/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/11T3mkloDCl7Hze5znkXOQA?pwd=4p7m) | Anomaly Detection & Localization | 
-| BTAD    | [Google Drive](https://drive.google.com/file/d/19Kd8jJLxZExwiTc9__6_r_jPqkmTXt4h/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/1f4Tq-EXRz6iAswygH2WbFg?pwd=a60n) | Anomaly Detection & Localization |
-| KSDD    | [Google Drive](https://drive.google.com/file/d/13UidsM1taqEAVV_JJTBiCV1D3KUBpmpj/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/12EaOdkSbdK85WX5ajrfjQw?pwd=6n3z) | Anomaly Detection & Localization |
-| DAGM    | [Google Drive](https://drive.google.com/file/d/1f4sm8hpWQRzZMpvM-j7Q3xPG2vtdwvTy/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/1JpDUJIksD99t003dNF1y9g?pwd=u3aq) | Anomaly Detection & Localization |
-| DTD-Synthetic    | [Google Drive](https://drive.google.com/file/d/1em51XXz5_aBNRJlJxxv3-Ed1dO9H3QgS/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/16FlvIBWtjaDzWxlZfWjNeg?pwd=aq5c) | Anomaly Detection & Localization |
+### Install the Plugin
 
+1. **Clone this repository:**
+   ```bash
+   git clone <repository-url>
+   cd AdaCLIP-cuvis
+   ```
 
+2. **For local development (recommended):**
+   
+   Ensure `cuvis.ai` is cloned at the same level as `AdaCLIP-cuvis`:
+   ```
+   my_project/
+   ├── cuvis.ai/
+   └── AdaCLIP-cuvis/
+   ```
+   
+   The `pyproject.toml` is pre-configured with a path dependency to `../cuvis.ai`.
+   Install with uv (recommended):
+   ```bash
+   uv pip install -e .
+   ```
+   
+   Or with pip:
+   ```bash
+   pip install -e .
+   ```
+   
+   This will automatically install `cuvis_ai` from the local path as an editable dependency.
 
+3. **For production/standalone installation:**
+   
+   If `cuvis_ai` is available from PyPI or another source, you can install normally:
+   ```bash
+   uv pip install -e .
+   ```
+   
+   The plugin will install `cuvis_ai` from the configured source. To override the path dependency, you can modify `pyproject.toml` or use environment-specific configuration.
 
-#### Medical Visual Anomaly Detection Datasets
-| Dataset | Google Drive | Baidu Drive | Task
-|------------|------------------|------------------|  ------------------|
-| HeadCT    | [Google Drive](https://drive.google.com/file/d/1ore0yCV31oLwwC--YUuTQfij-f2V32O2/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/16PfXWJlh6Y9vkecY9IownA?pwd=svsl) | Anomaly Detection |
-| BrainMRI    | [Google Drive](https://drive.google.com/file/d/1JLYyzcPG3ULY2J_aw1SY9esNujYm9GKd/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/1UgGlTR-ABWAEiVUX-QSPhA?pwd=vh9e) | Anomaly Detection |
-| Br35H    | [Google Drive](https://drive.google.com/file/d/1qaZ6VJDRk3Ix3oVp3NpFyTsqXLJ_JjQy/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/1yCS6t3ht6qwJgM06YsU3mg?pwd=ps1e) | Anomaly Detection |
-| ISIC    | [Google Drive](https://drive.google.com/file/d/1atZwmnFsz7mCsHWBZ8pkL_-Eul9bKFEx/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/1Mf0w8RFY9ECZBEoNTyV3ZA?pwd=p954) | Anomaly Localization |
-| ColonDB    | [Google Drive](https://drive.google.com/file/d/1tjZ0o5dgzka3wf_p4ErSRJ9fcC-RJK8R/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/1nJ4L65vfNFGpkK_OJjLoVg?pwd=v8q7) | Anomaly Localization |
-| ClinicDB    | [Google Drive](https://drive.google.com/file/d/1ciqZwMs1smSGDlwQ6tsr6YzylrqQBn9n/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/1TPysfqhA_sXRPLGNwWBX6Q?pwd=3da6) | Anomaly Localization |
-| TN3K    | [Google Drive](https://drive.google.com/file/d/1LuKEMhrUGwFBlGCaej46WoooH89V3O8_/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/1i5jMofCcRFcUdteq8VMEOQ?pwd=aoez) | Anomaly Localization |
+4. **Verify installation:**
+   ```python
+   from cuvis_ai_adaclip import AdaCLIPDetector, list_available_weights
+   print(list_available_weights())
+   ```
 
-#### Custom Datasets
-To use your custom dataset, follow these steps:
+## Quick Start
 
-1. Refer to the instructions in `./data_preprocess` to generate the JSON file for your dataset.
-2. Use `./dataset/base_dataset.py` to construct your own dataset.
+### Basic Usage
 
+```python
+from cuvis_ai_adaclip import AdaCLIPDetector
+from cuvis_ai.pipeline.canvas import CuvisCanvas
 
-### Weight Preparation
+# Create the detector node
+adaclip = AdaCLIPDetector(
+    weight_name="pretrained_all",
+    backbone="ViT-L-14-336",
+    prompt_text="normal: lentils, anomaly: stones",
+    gaussian_sigma=4.0,
+)
 
-We offer various pre-trained weights on different auxiliary datasets. 
-Please download the pre-trained weights in `./weights`.
-
-| Pre-trained Datasets | Google Drive | Baidu Drive 
-|------------|------------------|------------------|  
-| MVTec AD & ClinicDB    | [Google Drive](https://drive.google.com/file/d/1xVXANHGuJBRx59rqPRir7iqbkYzq45W0/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/1K9JhNAmmDt4n5Sqlq4-5hQ?pwd=fks1) | 
-| VisA & ColonDB    | [Google Drive](https://drive.google.com/file/d/1QGmPB0ByPZQ7FucvGODMSz7r5Ke5wx9W/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/1GmRCylpboPseT9lguCO9nw?pwd=fvvf) | 
-| All Datasets Mentioned Above   | [Google Drive](https://drive.google.com/file/d/1Cgkfx3GAaSYnXPLolx-P7pFqYV0IVzZF/view?usp=drive_link) | [Baidu Drive](https://pan.baidu.com/s/1J4aFAOhUbeYOBfZFbkOixA?pwd=0ts3) |
-
-
-### Train
-
-By default, we use MVTec AD & Colondb for training and VisA for validation:
-```shell
-CUDA_VISIBLE_DEVICES=0 python train.py --save_fig True --training_data mvtec colondb --testing_data visa
+# Use in a canvas
+canvas = CuvisCanvas("my_pipeline")
+canvas.add_node(adaclip)
+# ... wire up your pipeline
 ```
 
+### Download Pre-trained Weights
 
-Alternatively, for evaluation on MVTec AD & Colondb, we use VisA & ClinicDB for training and MVTec AD for validation.
-```shell
-CUDA_VISIBLE_DEVICES=0 python train.py --save_fig True --training_data visa clinicdb --testing_data mvtec
-```
-Since we have utilized half-precision (FP16) for training, the training process can occasionally be unstable.
-It is recommended to run the training process multiple times and choose the best model based on performance
-on the validation set as the final model.
+```python
+from cuvis_ai_adaclip import download_weights, list_available_weights
 
+# List available weights
+print(list_available_weights())
+# Output: ['pretrained_all', 'pretrained_mvtec_clinicdb', 'pretrained_visa_colondb']
 
-To construct a robust ZSAD model for demonstration, we also train our AdaCLIP on all AD datasets mentioned above:
-```shell
-CUDA_VISIBLE_DEVICES=0 python train.py --save_fig True \
---training_data \
-br35h brain_mri btad clinicdb colondb \
-dagm dtd headct isic mpdd mvtec sdd tn3k visa \
---testing_data mvtec
+# Download weights (automatically cached)
+download_weights("pretrained_all")
 ```
 
-### Test
+## Node API
 
-Manually select the best models from the validation set and place them in the `weights/` directory. Then, run the following testing script:
-```shell
-sh test.sh
+### `AdaCLIPDetector`
+
+A cuvis.ai `Node` that performs zero-shot anomaly detection on RGB images.
+
+#### Inputs
+
+- **`rgb_image`**: `torch.Tensor` of shape `[B, H, W, 3]` (float32, 0-1 or 0-255 range)
+
+#### Outputs
+
+- **`scores`**: `torch.Tensor` of shape `[B, H, W, 1]` - Pixel-level anomaly scores
+- **`anomaly_score`**: `torch.Tensor` of shape `[B]` - Image-level anomaly scores
+
+#### Parameters
+
+- **`weight_name`** (str, default: `"pretrained_all"`): Pre-trained weight identifier
+- **`backbone`** (str, default: `"ViT-L-14-336"`): CLIP backbone model
+  - Options: `"ViT-L-14-336"`, `"ViT-L-14"`, `"ViT-B-16"`, `"ViT-B-32"`, `"ViT-H-14"`
+- **`prompt_text`** (str, default: `""`): Text prompt describing normal vs. anomaly classes
+- **`image_size`** (int, default: `518`): Input image size for the model
+- **`prompting_depth`** (int, default: `4`): Depth of prompt layers
+- **`prompting_length`** (int, default: `5`): Length of learnable prompts
+- **`gaussian_sigma`** (float, default: `4.0`): Gaussian smoothing sigma for anomaly maps
+
+#### Example
+
+```python
+adaclip = AdaCLIPDetector(
+    weight_name="pretrained_all",
+    backbone="ViT-L-14-336",
+    prompt_text="normal: lentils, anomaly: stones",
+    gaussian_sigma=4.0,
+)
 ```
 
-If you want to test on a single image, you can refer to `test_single_image.sh`:
-```shell
-CUDA_VISIBLE_DEVICES=0 python test.py --testing_model image --ckt_path weights/pretrained_all.pth --save_fig True \
- --image_path asset/img.png --class_name candle --save_name test.png
-```
+## Examples
 
-## Main Results
+The plugin includes several example scripts demonstrating AdaCLIP integration with cuvis.ai:
 
-Due to differences in versions utilized, the reported performance may vary slightly compared to the detection performance 
-with the provided pre-trained weights. Some categories may show higher performance while others may show lower.
+### Available Examples
 
-![Table_industrial](./asset/Table_industrial.png)
-![Table_medical](./asset/Table_medical.png)
-![Fig_detection_results](./asset/Fig_detection_results.png)
+1. **`statistical_baseline.py`** - Fixed false-RGB (650/550/450 nm) band selection
+2. **`statistical_cir_false_color.py`** - CIR false-color band selection (NIR→R, R→G, G→B)
+3. **`statistical_cir_false_rg_color.py`** - CIR false-RG (NIR→R, R→G, visible Green→B)
+4. **`statistical_high_contrast.py`** - High-contrast band selection (variance + Laplacian)
+5. **`statistical_supervised_cir.py`** - Supervised CIR (windowed mRMR)
+6. **`statistical_supervised_full_spectrum.py`** - Supervised full-spectrum (global mRMR)
+7. **`statistical_supervised_windowed_false_rgb.py`** - Supervised windowed false-RGB
 
-### :page_facing_up: Demo App
+### Running Examples
 
-To run the demo application, use the following command:
+All examples are located in `cuvis_ai_adaclip/examples_cuvis/` and can be run with:
 
 ```bash
-python app.py
+# From the AdaCLIP-cuvis root directory
+uv run python cuvis_ai_adaclip/examples_cuvis/statistical_baseline.py \
+    data_root=../cuvis.ai/data/Lentils \
+    model_name=ViT-L-14-336 \
+    weight_name=pretrained_all
 ```
 
-Or visit our [Online Demo](https://huggingface.co/spaces/Caoyunkang/AdaCLIP) for a quick start. The three pre-trained weights mentioned are available there. Feel free to test them with your own data!
+Examples support Hydra configuration overrides:
 
-Please note that we currently do not have a GPU environment for our Hugging Face Space, so inference for a single image may take approximately 50 seconds.
+```bash
+uv run python cuvis_ai_adaclip/examples_cuvis/statistical_cir_false_color.py \
+    data_root=../cuvis.ai/data/Lentils \
+    train_ids=[0,2] \
+    test_ids=[1,3,5] \
+    prompt="normal: lentils, anomaly: stones" \
+    gaussian_sigma=4.0
+```
 
-![Demo](./asset/Fig_app.png)
+## Integration with cuvis.ai
 
-## 💘 Acknowledgements
-Our work is largely inspired by the following projects. Thanks for their admiring contribution.
+### Node Registration
 
-- [VAND-APRIL-GAN](https://github.com/ByChelsea/VAND-APRIL-GAN)
-- [AnomalyCLIP](https://github.com/zqhang/AnomalyCLIP)
-- [SAA](https://github.com/caoyunkang/Segment-Any-Anomaly)
+The plugin automatically registers nodes when imported. For explicit registration:
 
+```python
+from cuvis_ai_adaclip import register_all_nodes
 
-## Stargazers over time
-[![Stargazers over time](https://starchart.cc/caoyunkang/AdaCLIP.svg?variant=adaptive)](https://starchart.cc/caoyunkang/AdaCLIP)
+num_registered = register_all_nodes()
+print(f"Registered {num_registered} nodes")
+```
 
+### Pipeline Example
+
+```python
+from cuvis_ai_adaclip import AdaCLIPDetector
+from cuvis_ai.node.band_selection import CIRFalseColorSelector
+from cuvis_ai.node.data import LentilsAnomalyDataNode
+from cuvis_ai.pipeline.canvas import CuvisCanvas
+
+canvas = CuvisCanvas("adaclip_pipeline")
+
+# Create nodes
+data_node = LentilsAnomalyDataNode(wavelengths=wavelengths, normal_class_ids=[0, 1])
+band_selector = CIRFalseColorSelector(nir_nm=860.0, red_nm=670.0, green_nm=560.0)
+adaclip = AdaCLIPDetector(
+    weight_name="pretrained_all",
+    prompt_text="normal: lentils, anomaly: stones",
+)
+
+# Wire up the pipeline
+canvas.connect(
+    (data_node.outputs.cube, band_selector.inputs.cube),
+    (data_node.outputs.wavelengths, band_selector.inputs.wavelengths),
+    (band_selector.outputs.rgb_image, adaclip.inputs.rgb_image),
+)
+```
+
+## Available Weights
+
+The plugin provides access to pre-trained AdaCLIP weights:
+
+| Weight Name | Description | Google Drive |
+|------------|-------------|--------------|
+| `pretrained_all` | Trained on all datasets | [Link](https://drive.google.com/file/d/1Cgkfx3GAaSYnXPLolx-P7pFqYV0IVzZF/view) |
+| `pretrained_mvtec_clinicdb` | Trained on MVTec AD & ClinicDB | [Link](https://drive.google.com/file/d/1xVXANHGuJBRx59rqPRir7iqbkYzq45W0/view) |
+| `pretrained_visa_colondb` | Trained on VisA & ColonDB | [Link](https://drive.google.com/file/d/1QGmPB0ByPZQ7FucvGODMSz7r5Ke5wx9W/view) |
+
+Weights are automatically downloaded and cached on first use.
+
+## Architecture
+
+This plugin repository contains:
+
+- **`cuvis_ai_adaclip/`** - The plugin package
+  - `adaclip_upstream.py` - High-level AdaCLIP model wrapper
+  - `node/adaclip_node.py` - cuvis.ai Node implementation
+  - `weights.py` - Weight download and management
+  - `examples_cuvis/` - Example scripts for cuvis.ai integration
+- **`method/`** - Upstream AdaCLIP core implementation
+- **`dataset/`** - Dataset loaders (for training)
+- **`adaclip_tools/`** - Utility functions
+
+## Compatibility
+
+- **Python**: 3.10-3.13
+- **PyTorch**: Provided by cuvis.ai dependency
 
 ## Citation
 
-If you find this project helpful for your research, please consider citing the following BibTeX entry.
+If you use AdaCLIP in your research, please cite:
 
-```BibTex
-
+```bibtex
 @inproceedings{AdaCLIP,
   title={AdaCLIP: Adapting CLIP with Hybrid Learnable Prompts for Zero-Shot Anomaly Detection},
   author={Cao, Yunkang and Zhang, Jiangning and Frittoli, Luca and Cheng, Yuqi and Shen, Weiming and Boracchi, Giacomo},
   booktitle={European Conference on Computer Vision},
   year={2024}
 }
-
 ```
+
+## License
+
+MIT License (see [LICENSE](LICENSE) file)
+
+## Acknowledgments
+
+- Original AdaCLIP implementation: [caoyunkang/AdaCLIP](https://github.com/caoyunkang/AdaCLIP)
+- cuvis.ai framework: [cubert-hyperspectral/cuvis.ai](https://github.com/cubert-hyperspectral/cuvis.ai)
+

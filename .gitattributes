@@ -1,2 +1,4 @@
-*.png filter=lfs diff=lfs merge=lfs -text
-*.txt.gz filter=lfs diff=lfs merge=lfs -text
+# LFS rules disabled to make installation via git (e.g. uv, pip) independent of LFS availability.
+# If needed, re-enable and ensure all LFS objects are uploaded.
+# *.png filter=lfs diff=lfs merge=lfs -text
+# *.txt.gz filter=lfs diff=lfs merge=lfs -text
