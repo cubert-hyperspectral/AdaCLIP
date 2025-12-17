@@ -53,10 +53,11 @@ Homepage = "https://github.com/cubert-hyperspectral/AdaCLIP"
 py-modules = ["loss"]
 
 [tool.setuptools.packages.find]
-include = ["method*", "dataset*", "adaclip_tools*", "cuvis_ai_adaclip*"]
+include = ["method*", "dataset*", "adaclip_tools*", "cuvis_ai_adaclip*", "model_configs*"]
 
 [tool.setuptools.package-data]
 method = ["*.txt.gz"]
+model_configs = ["*.json"]
 
 [tool.uv.sources]
 # only use when building adaclip examples inside this repo to install cuvis ai in the env
