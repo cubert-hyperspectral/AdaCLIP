@@ -10,3 +10,6 @@ __pycache__/
 /weights/
 /outputs/
 /lightning_logs/
+.history/
+data/
+*.pt

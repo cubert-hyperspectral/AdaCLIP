@@ -21,6 +21,7 @@ dependencies = [
     # to mirror the original AdaCLIP requirements and make the plugin self-explanatory.
     "ftfy",
     "seaborn",
+    "click",  # For CLI interface
 
     # Original AdaCLIP requirements (kept here as comments for reference):
     # "torch==1.11.0",
@@ -61,7 +62,7 @@ model_configs = ["*.json"]
 
 [tool.uv.sources]
 # only use when building adaclip examples inside this repo to install cuvis ai in the env
-# cuvis_ai = { path = "../cuvis.ai", editable = true }
+cuvis_ai = { path = "../cuvis.ai", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 

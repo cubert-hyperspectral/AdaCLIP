@@ -442,9 +442,5 @@ class AdaCLIPDetector(Node):
         
         return result
 
-    def load(self, params: dict, serial_dir: str) -> None:  # noqa: D401, ARG002
-        """Legacy no-op; configuration is restored via constructor/state_dict elsewhere."""
-        return
-
 
 __all__ = ["AdaCLIPDetector"]

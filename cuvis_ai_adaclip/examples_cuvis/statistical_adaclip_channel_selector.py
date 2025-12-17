@@ -20,14 +20,13 @@ We log:
   - RX-based anomaly detection metrics (optional comparison)
   - RGB + anomaly masks/overlays via TensorBoard
 """
-
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
 import torch
-import hydra
+import click
 from cuvis_ai.anomaly.rx_detector import RXGlobal
 from cuvis_ai.anomaly.rx_logit_head import RXLogitHead
 from cuvis_ai.data.lentils_anomaly import SingleCu3sDataModule
@@ -59,13 +58,13 @@ from cuvis_ai.training.config import (
     TrainingConfig,
 )
 from loguru import logger
-from omegaconf import DictConfig
 
 from cuvis_ai_adaclip import (
     AdaCLIPDetector,
     download_weights,
     list_available_weights,
 )
+from cuvis_ai_adaclip.cli_utils import AdaCLIPCLI
 
 # Ensure cuvis.ai project root on sys.path when run from this repo
 # From: AdaCLIP-cuvis/cuvis_ai_adaclip/examples_cuvis/statistical_adaclip_channel_selector.py
@@ -74,7 +73,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]  # gitlab_cuvis_ai_3
 CUVIS_AI_ROOT = PROJECT_ROOT / "cuvis.ai"
 if str(CUVIS_AI_ROOT) not in sys.path:
     sys.path.insert(0, str(CUVIS_AI_ROOT))
-
 
 DEFAULT_DATA_ROOT = CUVIS_AI_ROOT / "data" / "Lentils"
 DEFAULT_TRAIN_IDS = [0, 2]
@@ -88,18 +86,8 @@ DEFAULT_MONITOR_ROOT = CUVIS_AI_ROOT / "outputs" / "tensorboard"
 DEFAULT_MASK_CHANNEL = 0
 DEFAULT_QUANTILE = 0.995
 
-AVAILABLE_BACKBONES = [
-    "ViT-L-14-336",
-    "ViT-L-14",
-    "ViT-B-16",
-    "ViT-B-32",
-    "ViT-H-14",
-]
-
-
-def _expand_path(value: str | Path) -> Path:
-    return Path(str(value)).expanduser()
-
+# Create reusable CLI instance
+cli = AdaCLIPCLI("AdaCLIP Channel Selector")
 
 class NormalizeRGBNode(Node):
     """Per-image, per-channel min-max normalization for RGB [B, H, W, 3].
@@ -162,48 +150,31 @@ class NormalizeRGBNode(Node):
 
         return {"rgb_out": rgb}
 
-
-@hydra.main(
-    version_base=None,
-    config_path="../../../cuvis.ai/cuvis_ai/conf",
-    config_name="general",
-)
-def main(cfg: DictConfig) -> None:
+@cli.add_common_options
+@cli.add_data_options
+@cli.add_visualization_options
+@click.command()
+def main(**kwargs):
     """Main training function with AdaCLIP + SoftChannelSelector."""
+    # Parse configuration using CLI utilities
+    data_root = Path(kwargs.get("cu3s_file_path", "data/Lentils/Lentils_000.cu3s")).parent
+    output_dir = Path(kwargs["output_dir"])
+    data_config = cli.parse_data_config(**kwargs)
 
-    # ----------------------------
-    # Resolve configuration
-    # ----------------------------
-    data_root = _expand_path(getattr(cfg, "data_root", DEFAULT_DATA_ROOT))
-    train_ids = list(getattr(cfg, "train_ids", DEFAULT_TRAIN_IDS))
-    val_ids = list(getattr(cfg, "val_ids", DEFAULT_VAL_IDS))
-    test_ids = list(getattr(cfg, "test_ids", DEFAULT_TEST_IDS))
+    model_name = kwargs["backbone_name"]
+    weight_name = kwargs["weight_name"]
+    prompt_text = kwargs["prompt_text"]
+    experiment_name = DEFAULT_EXPERIMENT_NAME
+    monitor_root = output_dir / ".." / "tensorboard"
 
-    model_name = str(getattr(cfg, "model_name", DEFAULT_MODEL_NAME))
-    weight_name = str(getattr(cfg, "weight_name", DEFAULT_WEIGHT_NAME))
-    prompt_text = str(getattr(cfg, "prompt", DEFAULT_PROMPT))
-    experiment_name = str(getattr(cfg, "experiment_name", DEFAULT_EXPERIMENT_NAME))
-    monitor_root = _expand_path(getattr(cfg, "monitor_root", DEFAULT_MONITOR_ROOT))
-
-    mask_channel = int(getattr(cfg, "mask_viz_channel", DEFAULT_MASK_CHANNEL))
-    quantile = float(getattr(cfg, "quantile", DEFAULT_QUANTILE))
-    gaussian_sigma = float(getattr(cfg, "gaussian_sigma", 4.0))
-
-    if model_name not in AVAILABLE_BACKBONES:
-        raise ValueError(
-            f"Unknown model '{model_name}'. "
-            f"Available: {', '.join(AVAILABLE_BACKBONES)}",
-        )
-
-    if not data_root.exists():
-        raise FileNotFoundError(
-            f"Data directory not found: {data_root}. "
-            "Set data_root or download the Lentils dataset.",
-        )
+    mask_channel = DEFAULT_MASK_CHANNEL
+    quantile = kwargs["quantile"]
+    gaussian_sigma = kwargs["gaussian_sigma"]
+    visualize_upto = kwargs["visualize_upto"]
 
     logger.info("=== AdaCLIP + SoftChannelSelector example (plugin) ===")
     logger.info("Data root: {}", data_root)
-    logger.info("Splits: train={}, val={}, test={}", train_ids, val_ids, test_ids)
+    logger.info("Splits: train={}, val={}, test={}", data_config["train_ids"], data_config["val_ids"], data_config["test_ids"])
     logger.info("Model: {} | Weights: {}", model_name, weight_name)
     logger.info("Prompt: {}", prompt_text)
 
@@ -213,11 +184,11 @@ def main(cfg: DictConfig) -> None:
     datamodule = SingleCu3sDataModule(
         data_dir=str(data_root),
         dataset_name="Lentils",
-        batch_size=4,
-        train_ids=train_ids,
-        val_ids=val_ids,
-        test_ids=test_ids,
-        processing_mode="Reflectance",
+        batch_size=data_config["batch_size"],
+        train_ids=data_config["train_ids"],
+        val_ids=data_config["val_ids"],
+        test_ids=data_config["test_ids"],
+        processing_mode=data_config["processing_mode"],
         normalize_to_unit=False,
     )
     datamodule.setup(stage="fit")
@@ -244,15 +215,12 @@ def main(cfg: DictConfig) -> None:
 
     data_node = LentilsAnomalyDataNode(
         wavelengths=wavelengths,
-        normal_class_ids=[
-            0,
-            1,
-        ],  # {0: 'Unlabeled', 1: 'Lentils_black', 2: 'Lentils_brown', 3: 'Stone', 4: 'Background'}
+        normal_class_ids=[0, 1],
     )
     selector = SoftChannelSelector(
         n_select=3,
         input_channels=61,
-        init_method="variance",  # uses streaming stats utilities in cuvis.ai
+        init_method="variance",
         temperature_init=5.0,
         temperature_min=0.1,
         temperature_decay=0.9,
@@ -296,15 +264,15 @@ def main(cfg: DictConfig) -> None:
     score_viz_student = ScoreHeatmapVisualizer(
         name="scores_student",
         normalize_scores=True,
-        up_to=3,
+        up_to=visualize_upto,
     )
     score_viz_adaclip = ScoreHeatmapVisualizer(
         name="scores_adaclip",
         normalize_scores=True,
-        up_to=3,
+        up_to=visualize_upto,
     )
-    mask_viz_student = RGBAnomalyMask(name="mask_student", up_to=3)
-    mask_viz_adaclip = RGBAnomalyMask(name="mask_adaclip", up_to=3)
+    mask_viz_student = RGBAnomalyMask(name="mask_student", up_to=visualize_upto)
+    mask_viz_adaclip = RGBAnomalyMask(name="mask_adaclip", up_to=visualize_upto)
 
     tensorboard_node = TensorBoardMonitorNode(
         output_dir=str(monitor_root),
@@ -460,8 +428,5 @@ def main(cfg: DictConfig) -> None:
         f"--logdir={tensorboard_node.output_dir}",
     )
 
-
 if __name__ == "__main__":
     main()
-
-
