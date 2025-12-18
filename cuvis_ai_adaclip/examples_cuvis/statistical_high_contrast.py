@@ -45,16 +45,16 @@ cli = AdaCLIPCLI("AdaCLIP High Contrast")
 
 @cli.add_common_options
 @cli.add_data_options
+@cli.add_high_contrast_options
 @cli.add_visualization_options
 @click.command()
 def main(**kwargs):
     """Run AdaCLIP high-contrast (statistical) with Click CLI."""
-    logger.info("Run: AdaCLIP high-contrast (statistical)")
+    logger.info("=== AdaCLIP high-contrast (statistical) ===")
 
     # Parse configuration using CLI utilities
     output_dir = Path(kwargs["output_dir"])
     data_config = cli.parse_data_config(**kwargs)
-    logger.info("Output: {}", output_dir)
 
     # ----------------------------
     # Data & weights
@@ -63,13 +63,14 @@ def main(**kwargs):
     datamodule.setup(stage=None)
 
     wavelengths = datamodule.train_ds.wavelengths
-    logger.info("Wavelengths: {:.1f}-{:.1f} nm", wavelengths.min(), wavelengths.max())
+    logger.info("Wavelength range: {:.1f}-{:.1f} nm", wavelengths.min(), wavelengths.max())
 
     model_name = kwargs["backbone_name"]
-    weight_name = kwargs["pretrained_adaclip"]
+    weight_name = kwargs["weight_name"]
     prompt_text = kwargs["prompt_text"]
+    target_class_id = kwargs["target_class_id"]
 
-    logger.info("Available weights: {}", list_available_weights())
+    logger.info("Available AdaCLIP weights: {}", list_available_weights())
     download_weights(weight_name)
 
     # ----------------------------
@@ -79,9 +80,9 @@ def main(**kwargs):
     visualize_upto = kwargs["visualize_upto"]
     gaussian_sigma = kwargs["gaussian_sigma"]
 
-    # High-contrast band selection parameters (default values)
-    windows = ((400.0, 500.0), (500.0, 600.0), (600.0, 700.0), (700.0, 800.0), (800.0, 900.0), (900.0, 1000.0))
-    alpha = 0.5
+    # High-contrast band selection parameters from CLI options
+    windows = cli.parse_hc_windows(kwargs["hc_windows"])
+    alpha = kwargs["hc_alpha"]
 
     # Read optimization flags from config (default to False for non-optimized comparison)
     use_half_precision = kwargs.get("use_half_precision", False)
@@ -92,9 +93,10 @@ def main(**kwargs):
     )
     logger.info("Model: {} | Weights: {}", model_name, weight_name)
     logger.info("Prompt: {}", prompt_text)
-    logger.info("Selector windows: {}", windows)
-    logger.info("Selector alpha: {}", alpha)
-    logger.info("AdaCLIP opts: fp16={}, warmup={}", use_half_precision, enable_warmup)
+    logger.info("Target anomaly class_id: {}", target_class_id)
+    logger.info("High-contrast windows: {}", windows)
+    logger.info("High-contrast alpha: {}", alpha)
+    logger.info(f"AdaCLIP optimizations: FP16={use_half_precision}, Warmup={enable_warmup}")
 
     # ----------------------------
     # Build pipeline
@@ -121,7 +123,7 @@ def main(**kwargs):
     mask_viz = RGBAnomalyMask(up_to=visualize_upto)
     monitor = TensorBoardMonitorNode(
         run_name=pipeline.name,
-        output_dir=str(Path(kwargs["output_dir"])/ "tensorboard"),
+        output_dir=str(output_dir / ".." / "tensorboard"),
     )
 
     # Wiring: cube → band selector → AdaCLIP → decider → metrics + viz + TB
@@ -151,7 +153,7 @@ def main(**kwargs):
     # Move pipeline to GPU if available
     # ----------------------------
     device = cli.get_device()
-    logger.info("Device: {}", device)
+    logger.info(f"Moving pipeline to device: {device}")
     pipeline.to(device)
 
     # ----------------------------
@@ -177,12 +179,12 @@ def main(**kwargs):
     trainer = StatisticalTrainer(pipeline=pipeline, datamodule=datamodule)
 
     if data_config["val_ids"]:
-        logger.info("Validate: start")
+        logger.info("Running validation...")
         trainer.validate()
     else:
-        logger.info("Validate: skipped (no val_ids)")
+        logger.info("Skipping validation (no val_ids provided)")
 
-    logger.info("Test: start")
+    logger.info("Running test...")
     trainer.test()
 
     # ----------------------------
@@ -201,17 +203,28 @@ def main(**kwargs):
 
     # Save to trained_models/ (for this specific run)
     pipeline_output_path = results_dir / f"{pipeline.name}.yaml"
-    logger.info("Save pipeline: {}", pipeline_output_path)
+    logger.info(f"Saving pipeline to: {pipeline_output_path}")
     pipeline.save_to_file(str(pipeline_output_path), metadata=pipeline_metadata)
+    logger.info(f"  Created: {pipeline_output_path}")
+    logger.info(f"  Weights: {pipeline_output_path.with_suffix('.pt')}")
 
+    # Also save to configs/pipeline/ (for reference by experiment configs)
+    pipeline_config_dir = Path("configs/pipeline")
+    pipeline_config_dir.mkdir(parents=True, exist_ok=True)
+    pipeline_config_path = pipeline_config_dir / "adaclip_high_contrast.yaml"
+    logger.info(f"Saving pipeline config to: {pipeline_config_path}")
+    pipeline.save_to_file(str(pipeline_config_path), metadata=pipeline_metadata)
+    logger.info(f"  Created: {pipeline_config_path}")
 
-    # Create and save complete trainrun config for reproducibility    
+    # Create and save complete trainrun config for reproducibility
+    pipeline_config = pipeline.serialize()
+    training_cfg = TrainingConfig()
 
     trainrun_config = TrainRunConfig(
         name="adaclip_high_contrast_cli",
-        pipeline=pipeline.serialize(),
+        pipeline=pipeline_config,
         data=data_config,
-        training=TrainingConfig(),
+        training=training_cfg,
         output_dir=str(output_dir),
         loss_nodes=[],  # no learnable loss nodes
         metric_nodes=["detection_metrics"],
@@ -220,10 +233,14 @@ def main(**kwargs):
     )
 
     trainrun_output_path = results_dir / "adaclip_high_contrast_cli_trainrun.yaml"
-    logger.info("Save trainrun config: {}", trainrun_output_path)
+    logger.info(f"Saving trainrun config to: {trainrun_output_path}")
     trainrun_config.save_to_file(str(trainrun_output_path))
 
-    logger.info("TensorBoard cmd: uv run tensorboard --logdir={}", monitor.output_dir)
+    logger.info("=== Experiment Complete ===")
+    logger.info(f"Trained pipeline saved: {pipeline_output_path}")
+    logger.info(f"TrainRun config saved: {trainrun_output_path}")
+    logger.info(f"TensorBoard logs: {monitor.output_dir}")
+    logger.info(f"View logs: uv run tensorboard --logdir={output_dir}")
 
 if __name__ == "__main__":
     main()
