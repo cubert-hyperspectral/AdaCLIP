@@ -509,7 +509,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "cuvis" },
-    { name = "cuvis-ai-adaclip", marker = "extra == 'adaclip'", git = "https://github.com/cubert-hyperspectral/AdaCLIP.git?rev=main" },
+    { name = "cuvis-ai-adaclip", marker = "extra == 'adaclip'", git = "https://github.com/cubert-hyperspectral/cuvis-ai-adaclip.git?rev=staging" },
     { name = "dataclass-wizard" },
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "ftfy", specifier = ">=6.1.1" },

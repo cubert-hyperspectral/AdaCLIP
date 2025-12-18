@@ -48,7 +48,7 @@ nodes:
 - name: tensorboard_monitor
   class: cuvis_ai.node.monitor.TensorBoardMonitorNode
   params:
-    output_dir: outputs\example\..\tensorboard
+    output_dir: outputs\adaclip_baseline\..\tensorboard
     run_name: AdaCLIP_Baseline
     comment: ''
     flush_secs: 120

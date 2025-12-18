@@ -48,16 +48,23 @@ cli = AdaCLIPCLI("AdaCLIP Baseline")
 @click.command()
 def main(**kwargs):
     """Run AdaCLIP baseline (statistical) with Click CLI."""
-    logger.info("=== AdaCLIP baseline (statistical) ===")
+    logger.info("Run: AdaCLIP baseline (statistical)")
 
     # Parse configuration using CLI utilities
-    output_dir = Path(kwargs["output_dir"])
+    output_dir = Path(kwargs["output_dir"]) / "adaclip_baseline"
     data_config = cli.parse_data_config(**kwargs)
     target_wavelengths = cli.parse_target_wavelengths(kwargs["target_wavelengths"])
 
-    logger.info(f"Model: {kwargs['backbone_name']} | Weights: {kwargs['weight_name']}")
-    logger.info(f"Target wavelengths: {target_wavelengths} nm")
-    logger.info(f"Output dir: {output_dir}")
+    logger.info("Output: {}", output_dir)
+    logger.info(
+        "Splits: train={}, val={}, test={}",
+        data_config["train_ids"],
+        data_config["val_ids"],
+        data_config["test_ids"],
+    )
+    logger.info("Model: {} | Weights: {}", kwargs["backbone_name"], kwargs["pretrained_adaclip"])
+    logger.info("Prompt: {}", kwargs["prompt_text"])
+    logger.info("RGB wavelengths (nm): {}", target_wavelengths)
 
     # ----------------------------
     # Data & weights
@@ -66,9 +73,10 @@ def main(**kwargs):
     datamodule.setup(stage=None)
 
     wavelengths = datamodule.train_ds.wavelengths
-    logger.info(f"Wavelength range: {wavelengths.min():.1f}-{wavelengths.max():.1f} nm")
+    logger.info("Wavelengths: {:.1f}-{:.1f} nm", wavelengths.min(), wavelengths.max())
 
-    download_weights(kwargs["weight_name"])
+    logger.info("Available weights: {}", list_available_weights())
+    download_weights(kwargs["pretrained_adaclip"])
 
     # ----------------------------
     # Build pipeline with named nodes
@@ -77,6 +85,7 @@ def main(**kwargs):
 
     # Named nodes for better tracking
     normal_class_ids = cli.parse_normal_class_ids(kwargs["normal_class_ids"])
+    logger.info("Normal class_ids: {}", normal_class_ids)
     data_node = LentilsAnomalyDataNode(
         name="lentils_data_node",
         normal_class_ids=normal_class_ids,
@@ -88,7 +97,7 @@ def main(**kwargs):
 
     adaclip_detector = AdaCLIPDetector(
         name="adaclip_detector",
-        weight_name=kwargs["weight_name"],
+        weight_name=kwargs["pretrained_adaclip"],
         backbone=kwargs["backbone_name"],
         prompt_text=kwargs["prompt_text"],
         gaussian_sigma=kwargs["gaussian_sigma"],
@@ -115,7 +124,7 @@ def main(**kwargs):
     tensorboard_monitor = TensorBoardMonitorNode(
         name="tensorboard_monitor",
         run_name=pipeline.name,
-        output_dir=str(output_dir / ".." / "tensorboard"),
+        output_dir=str(Path(kwargs["output_dir"])/ "tensorboard"),
     )
 
     # Wiring: cube → band selector → AdaCLIP → decider → metrics + viz + TB
@@ -145,6 +154,7 @@ def main(**kwargs):
     # Move pipeline to GPU if available
     # ----------------------------
     device = cli.get_device()
+    logger.info(f"Moved the pipeline to Device: {device}")
     pipeline.to(device)
 
     # ----------------------------
@@ -169,10 +179,12 @@ def main(**kwargs):
     trainer = StatisticalTrainer(pipeline=pipeline, datamodule=datamodule)
 
     if data_config["val_ids"]:
+        logger.info("Starting with the validation dataset.")
         trainer.validate()
     else:
-        logger.info("Skipping validation (no val_ids provided)")
+        logger.info("Validate: skipped (no val_ids)")
 
+    logger.info("Starting with the test dataset.")
     trainer.test()
 
     # ----------------------------
@@ -191,12 +203,14 @@ def main(**kwargs):
 
     # Save pipeline
     pipeline_output_path = results_dir / f"{pipeline.name}.yaml"
+    logger.info("Save pipeline: {}", pipeline_output_path)
     pipeline.save_to_file(str(pipeline_output_path), metadata=pipeline_metadata)
 
     # Save to configs/pipeline/
     pipeline_config_dir = Path("configs/pipeline")
     pipeline_config_dir.mkdir(parents=True, exist_ok=True)
     pipeline_config_path = pipeline_config_dir / "adaclip_baseline.yaml"
+    logger.info("Save pipeline config: {}", pipeline_config_path)
     pipeline.save_to_file(str(pipeline_config_path), metadata=pipeline_metadata)
 
     # Save experiment config
@@ -213,10 +227,10 @@ def main(**kwargs):
     )
 
     trainrun_output_path = results_dir / "adaclip_baseline_cli_trainrun.yaml"
+    logger.info("Save trainrun config: {}", trainrun_output_path)
     trainrun_config.save_to_file(str(trainrun_output_path))
-
-    logger.info("=== Experiment Complete ===")
-    logger.info(f"Results saved to: {results_dir}")
+    logger.info("TensorBoard: {}", tensorboard_monitor.output_dir)
+    logger.info("TensorBoard cmd: uv run tensorboard --logdir={}", tensorboard_monitor.output_dir)
 
 if __name__ == "__main__":
     main()

@@ -11,7 +11,7 @@ All examples support the same reusable CLI options for consistency:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--backbone-name` | Choice | `ViT-L-14-336` | AdaCLIP backbone model |
-| `--weight-name` | Choice | `pretrained_all` | Pretrained weights |
+| `--pretrained-adaclip` | Choice | `pretrained_all` | Pretrained weights |
 | `--prompt-text` | String | `anomaly` | Text prompt for AdaCLIP |
 | `--output-dir` | String | `outputs/example` | Output directory |
 | `--visualize-upto` | Integer | `10` | Maximum visualizations to generate |
@@ -20,6 +20,7 @@ All examples support the same reusable CLI options for consistency:
 | `--gaussian-sigma` | Float | `4.0` | Gaussian sigma for AdaCLIP |
 | `--use-half-precision` | Flag | `False` | Enable FP16 optimization |
 | `--enable-warmup` | Flag | `False` | Enable warmup optimization |
+| `--normal-class-ids` | String | `0,1,2,4` | Comma-separated normal class IDs. Class mapping: {0: 'Unlabeled', 1: 'Lentils_black', 2: 'Lentils_brown', 3: 'Stone', 4: 'Background'}. Default makes 'Stone' (class 3) the anomaly. |
 
 ## 📋 Available Examples
 
@@ -27,11 +28,7 @@ All examples support the same reusable CLI options for consistency:
 **File**: `statistical_baseline.py`
 
 ```bash
-uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_baseline.py \
-    --backbone-name ViT-L-14-336 \
-    --weight-name pretrained_all \
-    --visualize-upto 5 \
-    --target-wavelengths 650,550,450
+uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_baseline.py --backbone-name ViT-L-14-336 --pretrained-adaclip pretrained_all --visualize-upto 5 --target-wavelengths 650,550,450
 ```
 
 **Features**:
@@ -43,10 +40,7 @@ uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_baseline.py \
 **File**: `statistical_adaclip_channel_selector.py`
 
 ```bash
-uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_adaclip_channel_selector.py \
-    --backbone-name ViT-L-14-336 \
-    --weight-name pretrained_all \
-    --visualize-upto 3
+uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_adaclip_channel_selector.py --backbone-name ViT-L-14-336 --pretrained-adaclip pretrained_all --visualize-upto 3
 ```
 
 **Features**:
@@ -59,10 +53,7 @@ uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_adaclip_channel_sele
 **File**: `statistical_cir_false_color.py`
 
 ```bash
-uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_cir_false_color.py \
-    --backbone-name ViT-L-14-336 \
-    --weight-name pretrained_all \
-    --visualize-upto 5
+uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_cir_false_color.py --backbone-name ViT-L-14-336 --pretrained-adaclip pretrained_all --visualize-upto 5
 ```
 
 **Features**:
@@ -74,10 +65,7 @@ uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_cir_false_color.py \
 **File**: `statistical_cir_false_rg_color.py`
 
 ```bash
-uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_cir_false_rg_color.py \
-    --backbone-name ViT-L-14-336 \
-    --weight-name pretrained_all \
-    --visualize-upto 5
+uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_cir_false_rg_color.py --backbone-name ViT-L-14-336 --pretrained-adaclip pretrained_all --visualize-upto 5
 ```
 
 **Features**:
@@ -89,10 +77,7 @@ uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_cir_false_rg_color.p
 **File**: `statistical_high_contrast.py`
 
 ```bash
-uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_high_contrast.py \
-    --backbone-name ViT-L-14-336 \
-    --weight-name pretrained_all \
-    --visualize-upto 5
+uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_high_contrast.py --backbone-name ViT-L-14-336 --pretrained-adaclip pretrained_all --visualize-upto 5
 ```
 
 **Features**:
@@ -104,10 +89,7 @@ uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_high_contrast.py \
 **File**: `statistical_supervised_cir.py`
 
 ```bash
-uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_supervised_cir.py \
-    --backbone-name ViT-L-14-336 \
-    --weight-name pretrained_all \
-    --visualize-upto 5
+uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_supervised_cir.py --backbone-name ViT-L-14-336 --pretrained-adaclip pretrained_all --visualize-upto 5
 ```
 
 **Features**:
@@ -120,10 +102,7 @@ uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_supervised_cir.py \
 **File**: `statistical_supervised_full_spectrum.py`
 
 ```bash
-uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_supervised_full_spectrum.py \
-    --backbone-name ViT-L-14-336 \
-    --weight-name pretrained_all \
-    --visualize-upto 5
+uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_supervised_full_spectrum.py --backbone-name ViT-L-14-336 --pretrained-adaclip pretrained_all --visualize-upto 5
 ```
 
 **Features**:
@@ -136,10 +115,7 @@ uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_supervised_full_spec
 **File**: `statistical_supervised_windowed_false_rgb.py`
 
 ```bash
-uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_supervised_windowed_false_rgb.py \
-    --backbone-name ViT-L-14-336 \
-    --weight-name pretrained_all \
-    --visualize-upto 5
+uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_supervised_windowed_false_rgb.py --backbone-name ViT-L-14-336 --pretrained-adaclip pretrained_all --visualize-upto 5
 ```
 
 **Features**:
@@ -152,28 +128,17 @@ uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_supervised_windowed_
 
 ### Custom Data Configuration
 ```bash
-uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_baseline.py \
-    --cu3s-file-path data/Lentils/Lentils_000.cu3s \
-    --annotation-json-path data/Lentils/Lentils_000.json \
-    --train-ids 0,2 \
-    --val-ids 1 \
-    --test-ids 3,5 \
-    --normal-class-ids 0,1
+uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_baseline.py --cu3s-file-path data/Lentils/Lentils_000.cu3s --annotation-json-path data/Lentils/Lentils_000.json --train-ids 0,2 --val-ids 1 --test-ids 3,5 --normal-class-ids 0,1,2,4
 ```
 
 ### Performance Optimization
 ```bash
-uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_baseline.py \
-    --use-half-precision \
-    --enable-warmup \
-    --batch-size 8
+uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_baseline.py --use-half-precision --enable-warmup --batch-size 8
 ```
 
 ### Different Backbone Models
 ```bash
-uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_baseline.py \
-    --backbone-name ViT-B-16 \
-    --weight-name pretrained_all
+uv run python .\cuvis_ai_adaclip\examples_cuvis\statistical_baseline.py --backbone-name ViT-B-16 --pretrained-adaclip pretrained_all
 ```
 
 ## 📊 Output Structure
@@ -244,7 +209,7 @@ Use `--visualize-upto` to control the number of visualization outputs:
 ## 💡 Tips
 
 1. **Start with baseline**: Run `statistical_baseline.py` first to establish performance reference
-2. **Compare strategies**: Use the same `--backbone-name` and `--weight-name` for fair comparisons
+2. **Compare strategies**: Use the same `--backbone-name` and `--pretrained-adaclip` for fair comparisons
 3. **Visualization**: Start with `--visualize-upto 3` for quick feedback, increase for detailed analysis
 4. **GPU utilization**: Enable `--use-half-precision` for better GPU memory usage
 5. **Reproducibility**: All examples save complete configurations for reproducible results

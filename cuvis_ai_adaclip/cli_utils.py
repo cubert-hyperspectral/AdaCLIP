@@ -34,16 +34,14 @@ class AdaCLIPCLI:
         """Add common AdaCLIP options to a Click command."""
         available_weights = list_available_weights()
         options = [
-            click.option("--output-dir", type=str, default="outputs/example",
+            click.option("--output-dir", type=str, default="outputs/",
                         help="Output directory for results"),
             click.option("--backbone-name", type=click.Choice(AVAILABLE_BACKBONES), default="ViT-L-14-336",
                         help="Backbone name for AdaCLIP"),
-            click.option("--weight-name", type=click.Choice(available_weights), default="pretrained_all",
-                        help="Weight name for AdaCLIP"),
+            click.option("--pretrained-adaclip", type=click.Choice(available_weights), default="pretrained_all",
+                        help="Pretrained AdaCLIP weights to use"),
             click.option("--prompt-text", type=str, default="anomaly",
                         help="Prompt text for AdaCLIP"),
-            click.option("--target-class-id", type=int, default=2,
-                        help="Target anomaly class ID"),
             click.option("--quantile", type=float, default=0.95,
                         help="Quantile for binary decider"),
             click.option("--gaussian-sigma", type=float, default=4.0,
@@ -76,8 +74,8 @@ class AdaCLIPCLI:
                         help="Comma-separated test IDs"),
             click.option("--processing-mode", type=str, default="Reflectance",
                         help="Processing mode for data"),
-            click.option("--normal-class-ids", type=str, default="0,1",
-                        help="Comma-separated normal class IDs"),
+            click.option("--normal-class-ids", type=str, default="0,1,2,4",
+                        help="Comma-separated normal class IDs. Class mapping: {0: 'Unlabeled', 1: 'Lentils_black', 2: 'Lentils_brown', 3: 'Stone', 4: 'Background'}. Default makes 'Stone' (class 3) the anomaly."),
         ]
 
         # Apply options in reverse order (last to first)
