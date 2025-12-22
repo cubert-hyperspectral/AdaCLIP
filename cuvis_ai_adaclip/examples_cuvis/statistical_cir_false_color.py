@@ -67,7 +67,7 @@ def main(**kwargs):
     logger.info("Wavelength range: {:.1f}-{:.1f} nm", wavelengths.min(), wavelengths.max())
 
     model_name = kwargs["backbone_name"]
-    weight_name = kwargs["weight_name"]
+    weight_name = kwargs["pretrained_adaclip"]
     prompt_text = kwargs["prompt_text"]
     target_class_id = kwargs["target_class_id"]
 

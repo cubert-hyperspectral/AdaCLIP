@@ -68,7 +68,7 @@ def main(**kwargs):
     logger.info("Number of spectral bands: {}", num_spectral_bands)
 
     model_name = kwargs["backbone_name"]
-    weight_name = kwargs["weight_name"]
+    weight_name = kwargs["pretrained_adaclip"]
     prompt_text = kwargs["prompt_text"]
     target_class_id = kwargs["target_class_id"]
 

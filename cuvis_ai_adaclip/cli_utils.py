@@ -38,7 +38,7 @@ class AdaCLIPCLI:
                         help="Output directory for results"),
             click.option("--backbone-name", type=click.Choice(AVAILABLE_BACKBONES), default="ViT-L-14-336",
                         help="Backbone name for AdaCLIP"),
-            click.option("--weight-name", type=click.Choice(available_weights), default="pretrained_all",
+            click.option("--pretrained-adaclip", type=click.Choice(available_weights), default="pretrained_all",
                         help="Weight name for AdaCLIP"),
             click.option("--prompt-text", type=str, default="anomaly",
                         help="Prompt text for AdaCLIP"),
@@ -52,7 +52,7 @@ class AdaCLIPCLI:
                         help="Use half precision for optimization"),
             click.option("--enable-warmup", is_flag=True,
                         help="Enable warmup for optimization"),
-            click.option("--batch-size", type=int, default=4,
+            click.option("--batch-size", type=int, default=1,
                         help="Batch size for data loading"),
         ]
 
@@ -70,9 +70,9 @@ class AdaCLIPCLI:
                         help="Path to annotation JSON file"),
             click.option("--train-ids", type=str, default="0,2",
                         help="Comma-separated train IDs"),
-            click.option("--val-ids", type=str, default="1",
+            click.option("--val-ids", type=str, default="2,4",
                         help="Comma-separated validation IDs"),
-            click.option("--test-ids", type=str, default="3,5",
+            click.option("--test-ids", type=str, default="1,3,5",
                         help="Comma-separated test IDs"),
             click.option("--processing-mode", type=str, default="Reflectance",
                         help="Processing mode for data"),
@@ -227,8 +227,8 @@ class AdaCLIPCLI:
             "cu3s_file_path": kwargs.get("cu3s_file_path", "C:/Users/anish.raj/projects/gitlab_cuvis_ai_3/cuvis.ai/data/Lentils/Lentils_000.cu3s"),
             "annotation_json_path": kwargs.get("annotation_json_path", "C:/Users/anish.raj/projects/gitlab_cuvis_ai_3/cuvis.ai/data/Lentils/Lentils_000.json"),
             "train_ids": [int(x.strip()) for x in kwargs.get("train_ids", "0,2").split(",")],
-            "val_ids": [int(x.strip()) for x in kwargs.get("val_ids", "1").split(",")],
-            "test_ids": [int(x.strip()) for x in kwargs.get("test_ids", "3,5").split(",")],
+            "val_ids": [int(x.strip()) for x in kwargs.get("val_ids", "2,4").split(",")],
+            "test_ids": [int(x.strip()) for x in kwargs.get("test_ids", "1,3,5").split(",")],
             "batch_size": kwargs.get("batch_size", 4),
             "processing_mode": kwargs.get("processing_mode", "Reflectance")
         }

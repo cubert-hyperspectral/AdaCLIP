@@ -9,9 +9,9 @@ nodes:
 - name: CIRFalseColorSelector
   class: cuvis_ai.node.band_selection.CIRFalseColorSelector
   params:
-    nir_nm: 850.0
-    red_nm: 650.0
-    green_nm: 550.0
+    nir_nm: 860.0
+    red_nm: 670.0
+    green_nm: 560.0
 - name: AdaCLIPDetector
   class: cuvis_ai_adaclip.node.adaclip_node.AdaCLIPDetector
   params:
@@ -28,18 +28,18 @@ nodes:
 - name: QuantileBinaryDecider
   class: cuvis_ai.deciders.binary_decider.QuantileBinaryDecider
   params:
-    quantile: 0.95
+    quantile: 0.995
     reduce_dims: null
 - name: ScoreHeatmapVisualizer
   class: cuvis_ai.node.visualizations.ScoreHeatmapVisualizer
   params:
     normalize_scores: true
     cmap: inferno
-    up_to: 10
+    up_to: 3
 - name: RGBAnomalyMask
   class: cuvis_ai.node.visualizations.RGBAnomalyMask
   params:
-    up_to: 10
+    up_to: 3
 - name: detection_metrics
   class: cuvis_ai.node.metrics.AnomalyDetectionMetrics
   params:
@@ -47,7 +47,7 @@ nodes:
 - name: TensorBoardMonitorNode
   class: cuvis_ai.node.monitor.TensorBoardMonitorNode
   params:
-    output_dir: outputs\adaclip_cir_false_color\tensorboard
+    output_dir: outputs\example\..\tensorboard
     run_name: AdaCLIP_CIR_FalseColor
     comment: ''
     flush_secs: 120

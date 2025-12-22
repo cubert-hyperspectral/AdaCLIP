@@ -29,18 +29,18 @@ nodes:
 - name: quantile_decider
   class: cuvis_ai.deciders.binary_decider.QuantileBinaryDecider
   params:
-    quantile: 0.95
+    quantile: 0.995
     reduce_dims: null
 - name: score_heatmap_viz
   class: cuvis_ai.node.visualizations.ScoreHeatmapVisualizer
   params:
     normalize_scores: true
     cmap: inferno
-    up_to: 5
+    up_to: 3
 - name: rgb_anomaly_mask_viz
   class: cuvis_ai.node.visualizations.RGBAnomalyMask
   params:
-    up_to: 5
+    up_to: 3
 - name: anomaly_metrics
   class: cuvis_ai.node.metrics.AnomalyDetectionMetrics
   params:
@@ -48,7 +48,7 @@ nodes:
 - name: tensorboard_monitor
   class: cuvis_ai.node.monitor.TensorBoardMonitorNode
   params:
-    output_dir: outputs\adaclip_baseline\..\tensorboard
+    output_dir: outputs\example\tensorboard
     run_name: AdaCLIP_Baseline
     comment: ''
     flush_secs: 120
