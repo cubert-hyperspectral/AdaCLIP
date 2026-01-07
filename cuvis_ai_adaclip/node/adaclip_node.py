@@ -219,9 +219,12 @@ class AdaCLIPDetector(Node):
         This matches upstream PIL preprocessing exactly:
         - Fixed-size resize (no aspect ratio preservation)
         - Bicubic interpolation with antialias
-        - uint8 quantization before resizing (like PIL sees it)
+        - uint8 quantization before resizing (like PIL sees it) - SKIPPED when enable_gradients=True
         - ToTensor() equivalent: uint8 -> float in [0,1]
         - Normalize with cached mean/std
+        
+        NOTE: When enable_gradients=True, we skip uint8 conversion to preserve gradient flow.
+        uint8 is not a floating-point type and breaks the computation graph.
         """
         x = rgb_bhwc  # [B, H, W, 3]
 
@@ -229,16 +232,23 @@ class AdaCLIPDetector(Node):
         if x.max() <= 1.0:
             x = x * 255.0
 
-        # Mimic PIL uint8 quantization (rounding and clamping)
-        x = x.round().clamp(0, 255).to(torch.uint8)  # [B, H, W, 3]
+        # When enable_gradients=True, we MUST stay in float to preserve gradient flow.
+        # torch.uint8 is not a floating-point type and breaks the computation graph.
+        if self.enable_gradients:
+            # Differentiable path: clamp to [0,255] but stay in float32
+            x = x.clamp(0, 255).to(torch.float32)  # [B, H, W, 3] float32
+        else:
+            # Non-differentiable path: exact PIL match with uint8 quantization
+            x = x.round().clamp(0, 255).to(torch.uint8)  # [B, H, W, 3] uint8
 
         # BHWC -> BCHW
-        x = x.permute(0, 3, 1, 2)  # [B, 3, H, W] uint8
+        x = x.permute(0, 3, 1, 2)  # [B, 3, H, W]
 
         S = self.image_size
 
         # Resize to fixed size (S,S) with bicubic, antialias if available
-        if HAS_TORCHVISION_V2:
+        if HAS_TORCHVISION_V2 and not self.enable_gradients:
+            # torchvision.transforms.v2 can handle uint8 directly
             try:
                 x = F_v2.resize(
                     x,
@@ -255,8 +265,9 @@ class AdaCLIPDetector(Node):
                     x, size=(S, S), mode="bicubic", align_corners=False
                 )
         else:
-            # Fallback: interpolate (needs float)
-            x = x.to(torch.float32)
+            # Differentiable path or fallback: use interpolate (needs float)
+            if x.dtype != torch.float32:
+                x = x.to(torch.float32)
             try:
                 x = torch.nn.functional.interpolate(
                     x,
@@ -366,7 +377,7 @@ class AdaCLIPDetector(Node):
             try:
                 with torch.no_grad():
                     if self.use_half_precision:
-                        with torch.cuda.amp.autocast():
+                        with torch.cuda.amp.autocast(dtype=torch.float16):
                             _ = self._adaclip_model.predict(
                                 img_tensor[:1] if img_tensor.shape[0] > 1 else img_tensor,
                                 prompt=self.prompt_text,
@@ -396,7 +407,7 @@ class AdaCLIPDetector(Node):
         with grad_ctx():
             # Use autocast for additional speedup (works with FP16)
             if self.use_half_precision and torch.cuda.is_available():
-                with torch.cuda.amp.autocast():
+                with torch.cuda.amp.autocast(dtype=torch.float16):
                     anomaly_map, anomaly_score = self._adaclip_model.predict(
                         img_tensor,
                         prompt=self.prompt_text,
@@ -422,12 +433,14 @@ class AdaCLIPDetector(Node):
 
         # Resize anomaly map back to original size if needed
         if anomaly_map.shape[1] != h or anomaly_map.shape[2] != w:
+            input_dtype = anomaly_map.dtype
             anomaly_map = torch.nn.functional.interpolate(
                 anomaly_map.unsqueeze(1),  # [B, 1, h, w]
                 size=(h, w),
                 mode="bilinear",
                 align_corners=False,
             ).squeeze(1)  # [B, H, W]
+        anomaly_map = anomaly_map.to(input_dtype)
 
         scores = anomaly_map.unsqueeze(-1)  # [B, H, W, 1]
 
@@ -435,76 +448,76 @@ class AdaCLIPDetector(Node):
         # This allows FP16 computation internally for speed while maintaining FP32 interface
         # NOTE: This conversion is necessary because OUTPUT_SPECS specifies float32, and
         # downstream nodes (decider, visualizers) expect float32 inputs.
-        if scores.dtype == torch.float16:
+        if scores.dtype in (torch.float16, torch.bfloat16):
             scores = scores.float()
-        if anomaly_score.dtype == torch.float16:
+        if anomaly_score.dtype in (torch.float16, torch.bfloat16):
             anomaly_score = anomaly_score.float()
 
         # DEBUG: Save intermediate tensors
-        if hasattr(self, "_debug_save_dir") and self._debug_save_dir:
-            if context is not None:
-                for frame_idx in range(b):
-                    self._save_debug_tensor(rgb_image[frame_idx], "input_rgb", context, frame_idx)
-                    self._save_debug_tensor(scores[frame_idx], "output_scores", context, frame_idx)
-            else:
-                if hasattr(self, "_debug") and self._debug:
-                    print(f"[AdaCLIPDetector] DEBUG: context is None, skipping debug save")
-        else:
-            if hasattr(self, "_debug") and self._debug:
-                print(f"[AdaCLIPDetector] DEBUG: _debug_save_dir not set or empty. "
-                      f"hasattr={hasattr(self, '_debug_save_dir')}, "
-                      f"value={getattr(self, '_debug_save_dir', 'NOT_SET')}")
+        # if hasattr(self, "_debug_save_dir") and self._debug_save_dir:
+        #     if context is not None:
+        #         for frame_idx in range(b):
+        #             self._save_debug_tensor(rgb_image[frame_idx], "input_rgb", context, frame_idx)
+        #             self._save_debug_tensor(scores[frame_idx], "output_scores", context, frame_idx)
+        #     else:
+        #         if hasattr(self, "_debug") and self._debug:
+        #             print(f"[AdaCLIPDetector] DEBUG: context is None, skipping debug save")
+        # else:
+        #     if hasattr(self, "_debug") and self._debug:
+        #         print(f"[AdaCLIPDetector] DEBUG: _debug_save_dir not set or empty. "
+        #               f"hasattr={hasattr(self, '_debug_save_dir')}, "
+        #               f"value={getattr(self, '_debug_save_dir', 'NOT_SET')}")
 
-        # DEBUG: Print output info
-        if hasattr(self, "_debug") and self._debug:
-            print(f"[AdaCLIPDetector] Input RGB: shape={rgb_image.shape}, "
-                  f"min={rgb_image.min().item():.4f}, max={rgb_image.max().item():.4f}, "
-                  f"mean={rgb_image.mean().item():.4f}, requires_grad={rgb_image.requires_grad}")
-            print(f"[AdaCLIPDetector] Output scores: shape={scores.shape}, "
-                  f"min={scores.min().item():.4f}, max={scores.max().item():.4f}, "
-                  f"mean={scores.mean().item():.4f}, requires_grad={scores.requires_grad}")
+        # # DEBUG: Print output info
+        # if hasattr(self, "_debug") and self._debug:
+        #     print(f"[AdaCLIPDetector] Input RGB: shape={rgb_image.shape}, "
+        #           f"min={rgb_image.min().item():.4f}, max={rgb_image.max().item():.4f}, "
+        #           f"mean={rgb_image.mean().item():.4f}, requires_grad={rgb_image.requires_grad}")
+        #     print(f"[AdaCLIPDetector] Output scores: shape={scores.shape}, "
+        #           f"min={scores.min().item():.4f}, max={scores.max().item():.4f}, "
+        #           f"mean={scores.mean().item():.4f}, requires_grad={scores.requires_grad}")
 
         return {
             "scores": scores,
             "anomaly_score": anomaly_score,
         }
 
-    def _save_debug_tensor(
-        self, tensor: torch.Tensor, name: str, context: Context | None, frame_idx: int
-    ) -> None:
-        """Save tensor for debugging if debug mode is enabled."""
-        if not (hasattr(self, "_debug_save_dir") and self._debug_save_dir):
-            if hasattr(self, "_debug") and self._debug:
-                print(f"[AdaCLIPDetector._save_debug_tensor] Skipping: _debug_save_dir not set")
-            return
+    # def _save_debug_tensor(
+    #     self, tensor: torch.Tensor, name: str, context: Context | None, frame_idx: int
+    # ) -> None:
+    #     """Save tensor for debugging if debug mode is enabled."""
+    #     if not (hasattr(self, "_debug_save_dir") and self._debug_save_dir):
+    #         if hasattr(self, "_debug") and self._debug:
+    #             print(f"[AdaCLIPDetector._save_debug_tensor] Skipping: _debug_save_dir not set")
+    #         return
 
-        if context is None:
-            if hasattr(self, "_debug") and self._debug:
-                print(f"[AdaCLIPDetector._save_debug_tensor] Skipping: context is None")
-            return
+    #     if context is None:
+    #         if hasattr(self, "_debug") and self._debug:
+    #             print(f"[AdaCLIPDetector._save_debug_tensor] Skipping: context is None")
+    #         return
 
-        # Create directory structure: {stage}/epoch_{epoch}/batch_{batch_idx}/frame_{frame_idx}/
-        # Convert ExecutionStage enum to string (e.g., ExecutionStage.TRAIN -> "train")
-        stage_str = context.stage.value if hasattr(context.stage, "value") else str(context.stage)
-        save_dir = (
-            Path(self._debug_save_dir)
-            / stage_str
-            / f"epoch_{context.epoch:03d}"
-            / f"batch_{context.batch_idx:03d}"
-            / f"frame_{frame_idx:03d}"
-        )
-        save_dir.mkdir(parents=True, exist_ok=True)
+    #     # Create directory structure: {stage}/epoch_{epoch}/batch_{batch_idx}/frame_{frame_idx}/
+    #     # Convert ExecutionStage enum to string (e.g., ExecutionStage.TRAIN -> "train")
+    #     stage_str = context.stage.value if hasattr(context.stage, "value") else str(context.stage)
+    #     save_dir = (
+    #         Path(self._debug_save_dir)
+    #         / stage_str
+    #         / f"epoch_{context.epoch:03d}"
+    #         / f"batch_{context.batch_idx:03d}"
+    #         / f"frame_{frame_idx:03d}"
+    #     )
+    #     save_dir.mkdir(parents=True, exist_ok=True)
 
         # Convert tensor to numpy and save
-        try:
-            tensor_np = tensor.detach().cpu().numpy()
-            save_path = save_dir / f"{self.name}_{name}.npy"
-            np.save(save_path, tensor_np)
-            if hasattr(self, "_debug") and self._debug:
-                print(f"[AdaCLIPDetector._save_debug_tensor] Saved: {save_path}")
-        except Exception as e:
-            if hasattr(self, "_debug") and self._debug:
-                print(f"[AdaCLIPDetector._save_debug_tensor] ERROR saving {name}: {e}")
+        # try:
+        #     tensor_np = tensor.detach().cpu().numpy()
+        #     save_path = save_dir / f"{self.name}_{name}.npy"
+        #     np.save(save_path, tensor_np)
+        #     if hasattr(self, "_debug") and self._debug:
+        #         print(f"[AdaCLIPDetector._save_debug_tensor] Saved: {save_path}")
+        # except Exception as e:
+        #     if hasattr(self, "_debug") and self._debug:
+        #         print(f"[AdaCLIPDetector._save_debug_tensor] ERROR saving {name}: {e}")
 
     def load_state_dict(self, state_dict, strict: bool = True):
         """Load state dict with key remapping for _clip_model/_model compatibility.

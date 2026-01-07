@@ -26,12 +26,14 @@ from cuvis_ai_adaclip import (
 from loguru import logger
 
 from cuvis_ai.data.lentils_anomaly import SingleCu3sDataModule
-from cuvis_ai.deciders.binary_decider import QuantileBinaryDecider
+# TEMPORARY: Commented out for performance testing - DELETE after testing
+# from cuvis_ai.deciders.binary_decider import QuantileBinaryDecider
 from cuvis_ai.node.band_selection import CIRFalseColorSelector
 from cuvis_ai.node.data import LentilsAnomalyDataNode
-from cuvis_ai.node.metrics import AnomalyDetectionMetrics
-from cuvis_ai.node.monitor import TensorBoardMonitorNode
-from cuvis_ai.node.visualizations import RGBAnomalyMask, ScoreHeatmapVisualizer
+# from cuvis_ai.node.metrics import AnomalyDetectionMetrics
+# from cuvis_ai.node.monitor import TensorBoardMonitorNode
+# from cuvis_ai.node.visualizations import RGBAnomalyMask, ScoreHeatmapVisualizer
+# END TEMPORARY
 from cuvis_ai.pipeline.pipeline import CuvisPipeline
 from cuvis_ai.training import StatisticalTrainer
 from cuvis_ai.training.config import (
@@ -130,37 +132,40 @@ def main(**kwargs):
         use_torch_preprocess=use_torch_preprocess,
     )
 
-    decider = QuantileBinaryDecider(quantile=quantile)
-    standard_metrics = AnomalyDetectionMetrics(name="detection_metrics")
-    score_viz = ScoreHeatmapVisualizer(normalize_scores=True, up_to=visualize_upto)
-    mask_viz = RGBAnomalyMask(up_to=visualize_upto)
-    monitor = TensorBoardMonitorNode(
-        run_name=pipeline.name,
-        output_dir=str(output_dir / ".." / "tensorboard"),
-    )
+    # TEMPORARY: Commented out for performance testing - DELETE after testing
+    # These nodes add ~800-900ms overhead per image (decider, metrics, visualizations, TensorBoard)
+    # decider = QuantileBinaryDecider(quantile=quantile)
+    # standard_metrics = AnomalyDetectionMetrics(name="detection_metrics")
+    # score_viz = ScoreHeatmapVisualizer(normalize_scores=True, up_to=visualize_upto)
+    # mask_viz = RGBAnomalyMask(up_to=visualize_upto)
+    # monitor = TensorBoardMonitorNode(
+    #     run_name=pipeline.name,
+    #     output_dir=str(output_dir / ".." / "tensorboard"),
+    # )
+    # END TEMPORARY
 
-    # Wiring: cube → band selector → AdaCLIP → decider → metrics + viz + TB
+    # TEMPORARY: Minimal wiring for performance testing - only data → band selector → AdaCLIP
+    # This isolates AdaCLIP timing from pipeline overhead
     pipeline.connect(
         # hyperspectral → CIR false-color RGB
         (data_node.outputs.cube, band_selector.inputs.cube),
         (data_node.outputs.wavelengths, band_selector.inputs.wavelengths),
-        # RGB → AdaCLIP
+        # RGB → AdaCLIP (this is all we need for timing)
         (band_selector.outputs.rgb_image, adaclip.inputs.rgb_image),
-        # AdaCLIP scores → decider + visualizations
-        (adaclip.outputs.scores, decider.inputs.logits),
-        (adaclip.outputs.scores, score_viz.inputs.scores),
-        (adaclip.outputs.scores, mask_viz.inputs.scores),
-        # decisions + GT for metrics + overlay
-        (decider.outputs.decisions, standard_metrics.inputs.decisions),
-        (data_node.outputs.mask, standard_metrics.inputs.targets),
-        (decider.outputs.decisions, mask_viz.inputs.decisions),
-        (data_node.outputs.mask, mask_viz.inputs.mask),
-        (band_selector.outputs.rgb_image, mask_viz.inputs.rgb_image),
-        # send metrics + artifacts to TensorBoard
-        (standard_metrics.outputs.metrics, monitor.inputs.metrics),
-        (score_viz.outputs.artifacts, monitor.inputs.artifacts),
-        (mask_viz.outputs.artifacts, monitor.inputs.artifacts),
+        # TEMPORARY: Commented out all downstream nodes (decider, metrics, viz, TB)
+        # (adaclip.outputs.scores, decider.inputs.logits),
+        # (adaclip.outputs.scores, score_viz.inputs.scores),
+        # (adaclip.outputs.scores, mask_viz.inputs.scores),
+        # (decider.outputs.decisions, standard_metrics.inputs.decisions),
+        # (data_node.outputs.mask, standard_metrics.inputs.targets),
+        # (decider.outputs.decisions, mask_viz.inputs.decisions),
+        # (data_node.outputs.mask, mask_viz.inputs.mask),
+        # (band_selector.outputs.rgb_image, mask_viz.inputs.rgb_image),
+        # (standard_metrics.outputs.metrics, monitor.inputs.metrics),
+        # (score_viz.outputs.artifacts, monitor.inputs.artifacts),
+        # (mask_viz.outputs.artifacts, monitor.inputs.artifacts),
     )
+    # END TEMPORARY
 
     # ----------------------------
     # Move pipeline to GPU if available
@@ -249,7 +254,7 @@ def main(**kwargs):
         training=training_cfg,
         output_dir=str(output_dir),
         loss_nodes=[],
-        metric_nodes=["detection_metrics"],
+        metric_nodes=[],  # TEMPORARY: Empty since we commented out metrics node for performance testing
         freeze_nodes=[],
         unfreeze_nodes=[],
     )

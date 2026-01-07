@@ -48,7 +48,7 @@ class AdaCLIPCLI:
                         help="Quantile for binary decider"),
             click.option("--gaussian-sigma", type=float, default=4.0,
                         help="Gaussian sigma for AdaCLIP"),
-            click.option("--use-half-precision", default=True,
+            click.option("--use-half-precision", default=False,
                         help="Use half precision for optimization"),
             click.option("--enable-warmup", default=True,
                         help="Enable warmup for optimization"),

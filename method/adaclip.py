@@ -621,7 +621,7 @@ class AdaCLIP(nn.Module):
 
         return proj_cls_tokens, proj_patch_tokens, text_features
 
-    @torch.cuda.amp.autocast()
+    # @torch.cuda.amp.autocast()
     def forward(self, image, cls_name, aggregation=True):
         # extract features for images and texts
         image_features, patch_tokens, text_features = self.extract_feat(image, cls_name)
