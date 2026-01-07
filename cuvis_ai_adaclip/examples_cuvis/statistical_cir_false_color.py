@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import time
 import torch
 import click
 from cuvis_ai_adaclip import (
@@ -25,12 +26,14 @@ from cuvis_ai_adaclip import (
 from loguru import logger
 
 from cuvis_ai.data.lentils_anomaly import SingleCu3sDataModule
-from cuvis_ai.deciders.binary_decider import QuantileBinaryDecider
+# TEMPORARY: Commented out for performance testing - DELETE after testing
+# from cuvis_ai.deciders.binary_decider import QuantileBinaryDecider
 from cuvis_ai.node.band_selection import CIRFalseColorSelector
 from cuvis_ai.node.data import LentilsAnomalyDataNode
-from cuvis_ai.node.metrics import AnomalyDetectionMetrics
-from cuvis_ai.node.monitor import TensorBoardMonitorNode
-from cuvis_ai.node.visualizations import RGBAnomalyMask, ScoreHeatmapVisualizer
+# from cuvis_ai.node.metrics import AnomalyDetectionMetrics
+# from cuvis_ai.node.monitor import TensorBoardMonitorNode
+# from cuvis_ai.node.visualizations import RGBAnomalyMask, ScoreHeatmapVisualizer
+# END TEMPORARY
 from cuvis_ai.pipeline.pipeline import CuvisPipeline
 from cuvis_ai.training import StatisticalTrainer
 from cuvis_ai.training.config import (
@@ -52,6 +55,7 @@ cli = AdaCLIPCLI("AdaCLIP CIR False Color")
 def main(**kwargs):
     """Run AdaCLIP CIR false-color (statistical) with Click CLI."""
     logger.info("=== AdaCLIP CIR false-color (statistical) ===")
+    run_start = time.perf_counter()
 
     # Parse configuration using CLI utilities
     output_dir = Path(kwargs["output_dir"])
@@ -112,7 +116,7 @@ def main(**kwargs):
     use_torch_preprocess = kwargs.get("use_torch_preprocess", True)  # Default to True for fast path
 
     # Use image_size=336 for faster inference (smaller input = faster processing)
-    image_size = 336
+    image_size = 518
     
     logger.info(f"AdaCLIP optimizations: FP16={use_half_precision}, Warmup={enable_warmup}, TorchPreprocess={use_torch_preprocess}")
     logger.info(f"AdaCLIP image_size: {image_size} (smaller = faster inference)")
@@ -128,37 +132,40 @@ def main(**kwargs):
         use_torch_preprocess=use_torch_preprocess,
     )
 
-    decider = QuantileBinaryDecider(quantile=quantile)
-    standard_metrics = AnomalyDetectionMetrics(name="detection_metrics")
-    score_viz = ScoreHeatmapVisualizer(normalize_scores=True, up_to=visualize_upto)
-    mask_viz = RGBAnomalyMask(up_to=visualize_upto)
-    monitor = TensorBoardMonitorNode(
-        run_name=pipeline.name,
-        output_dir=str(output_dir / ".." / "tensorboard"),
-    )
+    # TEMPORARY: Commented out for performance testing - DELETE after testing
+    # These nodes add ~800-900ms overhead per image (decider, metrics, visualizations, TensorBoard)
+    # decider = QuantileBinaryDecider(quantile=quantile)
+    # standard_metrics = AnomalyDetectionMetrics(name="detection_metrics")
+    # score_viz = ScoreHeatmapVisualizer(normalize_scores=True, up_to=visualize_upto)
+    # mask_viz = RGBAnomalyMask(up_to=visualize_upto)
+    # monitor = TensorBoardMonitorNode(
+    #     run_name=pipeline.name,
+    #     output_dir=str(output_dir / ".." / "tensorboard"),
+    # )
+    # END TEMPORARY
 
-    # Wiring: cube → band selector → AdaCLIP → decider → metrics + viz + TB
+    # TEMPORARY: Minimal wiring for performance testing - only data → band selector → AdaCLIP
+    # This isolates AdaCLIP timing from pipeline overhead
     pipeline.connect(
         # hyperspectral → CIR false-color RGB
         (data_node.outputs.cube, band_selector.inputs.cube),
         (data_node.outputs.wavelengths, band_selector.inputs.wavelengths),
-        # RGB → AdaCLIP
+        # RGB → AdaCLIP (this is all we need for timing)
         (band_selector.outputs.rgb_image, adaclip.inputs.rgb_image),
-        # AdaCLIP scores → decider + visualizations
-        (adaclip.outputs.scores, decider.inputs.logits),
-        (adaclip.outputs.scores, score_viz.inputs.scores),
-        (adaclip.outputs.scores, mask_viz.inputs.scores),
-        # decisions + GT for metrics + overlay
-        (decider.outputs.decisions, standard_metrics.inputs.decisions),
-        (data_node.outputs.mask, standard_metrics.inputs.targets),
-        (decider.outputs.decisions, mask_viz.inputs.decisions),
-        (data_node.outputs.mask, mask_viz.inputs.mask),
-        (band_selector.outputs.rgb_image, mask_viz.inputs.rgb_image),
-        # send metrics + artifacts to TensorBoard
-        (standard_metrics.outputs.metrics, monitor.inputs.metrics),
-        (score_viz.outputs.artifacts, monitor.inputs.artifacts),
-        (mask_viz.outputs.artifacts, monitor.inputs.artifacts),
+        # TEMPORARY: Commented out all downstream nodes (decider, metrics, viz, TB)
+        # (adaclip.outputs.scores, decider.inputs.logits),
+        # (adaclip.outputs.scores, score_viz.inputs.scores),
+        # (adaclip.outputs.scores, mask_viz.inputs.scores),
+        # (decider.outputs.decisions, standard_metrics.inputs.decisions),
+        # (data_node.outputs.mask, standard_metrics.inputs.targets),
+        # (decider.outputs.decisions, mask_viz.inputs.decisions),
+        # (data_node.outputs.mask, mask_viz.inputs.mask),
+        # (band_selector.outputs.rgb_image, mask_viz.inputs.rgb_image),
+        # (standard_metrics.outputs.metrics, monitor.inputs.metrics),
+        # (score_viz.outputs.artifacts, monitor.inputs.artifacts),
+        # (mask_viz.outputs.artifacts, monitor.inputs.artifacts),
     )
+    # END TEMPORARY
 
     # ----------------------------
     # Move pipeline to GPU if available
@@ -189,14 +196,21 @@ def main(**kwargs):
     # but we can still use StatisticalTrainer to run val/test passes.
     trainer = StatisticalTrainer(pipeline=pipeline, datamodule=datamodule)
 
+    val_duration = 0.0
     if data_config["val_ids"]:
+        val_start = time.perf_counter()
         logger.info("Running validation...")
         trainer.validate()
+        val_duration = time.perf_counter() - val_start
+        logger.info(f"Validation duration: {val_duration:.2f} seconds")
     else:
         logger.info("Skipping validation (no val_ids provided)")
 
+    test_start = time.perf_counter()
     logger.info("Running test...")
     trainer.test()
+    test_duration = time.perf_counter() - test_start
+    logger.info(f"Test duration: {test_duration:.2f} seconds")
 
     # ----------------------------
     # Save pipeline and experiment config
@@ -240,7 +254,7 @@ def main(**kwargs):
         training=training_cfg,
         output_dir=str(output_dir),
         loss_nodes=[],
-        metric_nodes=["detection_metrics"],
+        metric_nodes=[],  # TEMPORARY: Empty since we commented out metrics node for performance testing
         freeze_nodes=[],
         unfreeze_nodes=[],
     )
@@ -249,11 +263,18 @@ def main(**kwargs):
     logger.info(f"Saving trainrun config to: {trainrun_output_path}")
     trainrun_config.save_to_file(str(trainrun_output_path))
 
+    total_duration = time.perf_counter() - run_start
     logger.info("=== Experiment Complete ===")
     logger.info(f"Trained pipeline saved: {pipeline_output_path}")
     logger.info(f"TrainRun config saved: {trainrun_output_path}")
-    logger.info(f"TensorBoard logs: {monitor.output_dir}")
-    logger.info(f"View logs: uv run tensorboard --logdir={output_dir}")
+    # TEMPORARY: Commented out TensorBoard reference since monitor is disabled for performance testing
+    # logger.info(f"TensorBoard logs: {monitor.output_dir}")
+    # logger.info(f"View logs: uv run tensorboard --logdir={output_dir}")
+    logger.info(
+        f"Timing: validation {val_duration:.2f}s, "
+        f"test {test_duration:.2f}s, "
+        f"total {total_duration:.2f}s"
+    )
 
 if __name__ == "__main__":
     main()

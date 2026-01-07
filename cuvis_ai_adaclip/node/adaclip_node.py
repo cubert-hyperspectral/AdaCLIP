@@ -304,6 +304,7 @@ class AdaCLIPDetector(Node):
             return self._preprocess_rgb_torch_pil_match(rgb_bhwc)
 
         # PIL preprocessing path (exact match with original CLIP preprocessing)
+        else:
             b = rgb_bhwc.shape[0]
 
             # Convert to uint8 numpy for PIL processing (happens on CPU)
