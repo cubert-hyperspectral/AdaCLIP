@@ -11,8 +11,9 @@ This node is a **self-contained** AdaCLIP integration that:
 from __future__ import annotations
 
 import time
-from typing import Any
 from contextlib import nullcontext
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -21,6 +22,15 @@ from cuvis_ai.pipeline.ports import PortSpec
 from cuvis_ai.utils.types import Context
 from PIL import Image
 from torchvision.transforms import Compose
+
+try:
+    from torchvision.transforms import InterpolationMode
+    from torchvision.transforms.v2 import functional as F_v2
+    HAS_TORCHVISION_V2 = True
+except ImportError:
+    HAS_TORCHVISION_V2 = False
+    InterpolationMode = None
+    F_v2 = None
 
 from cuvis_ai_adaclip.adaclip_upstream import (
     AdaCLIPModel,
@@ -76,6 +86,7 @@ class AdaCLIPDetector(Node):
         use_half_precision: bool = True,  # Enable FP16 for faster inference
         enable_warmup: bool = True,  # Warmup runs to optimize CUDA kernels
         enable_gradients: bool = False,  # If True, allow gradients to flow through AdaCLIP
+        use_torch_preprocess: bool = True,  # If True, use fast tensor preprocessing; if False, use PIL (exact match)
         **kwargs: Any,
     ) -> None:
         # Pass all serializable arguments to super().__init__ for proper hparams capture
@@ -90,6 +101,7 @@ class AdaCLIPDetector(Node):
             use_half_precision=use_half_precision,
             enable_warmup=enable_warmup,
             enable_gradients=enable_gradients,
+            use_torch_preprocess=use_torch_preprocess,
             **kwargs,
         )
 
@@ -103,6 +115,7 @@ class AdaCLIPDetector(Node):
         self.use_half_precision = use_half_precision
         self.enable_warmup = enable_warmup
         self.enable_gradients = enable_gradients
+        self.use_torch_preprocess = use_torch_preprocess
         self._warmup_done = False
 
         # Lazy initialization - will be registered as submodule when loaded
@@ -112,6 +125,18 @@ class AdaCLIPDetector(Node):
         # Track initialization state as a buffer (survives state_dict)
         self.register_buffer(
             "_initialized_flag", torch.tensor(False, dtype=torch.bool), persistent=True
+        )
+
+        # Cache mean/std as buffers for efficient preprocessing (don't recreate every call)
+        self.register_buffer(
+            "_clip_mean",
+            torch.tensor(OPENAI_DATASET_MEAN, dtype=torch.float32).view(1, 3, 1, 1),
+            persistent=False,
+        )
+        self.register_buffer(
+            "_clip_std",
+            torch.tensor(OPENAI_DATASET_STD, dtype=torch.float32).view(1, 3, 1, 1),
+            persistent=False,
         )
 
     @property
@@ -168,6 +193,7 @@ class AdaCLIPDetector(Node):
         logger.info(f"[AdaCLIPDetector] CUDA available: {torch.cuda.is_available()}")
         if torch.cuda.is_available():
             logger.info(f"[AdaCLIPDetector] CUDA device: {torch.cuda.get_device_name(0)}")
+        logger.info(f"[AdaCLIPDetector] Preprocessing method: {'tensor (fast)' if self.use_torch_preprocess else 'PIL (exact match)'}")
 
         # Apply optimizations after model is loaded
         if self.use_half_precision and torch.cuda.is_available():
@@ -185,30 +211,99 @@ class AdaCLIPDetector(Node):
         if torch.cuda.is_available():
             torch.backends.cudnn.benchmark = True
 
+    def _preprocess_rgb_torch_pil_match(self, rgb_bhwc: torch.Tensor) -> torch.Tensor:
+        """Torch implementation that closely matches the PIL pipeline.
+
+        Pipeline: Resize((S,S), BICUBIC) -> CenterCrop(S) -> ToTensor() -> Normalize(mean,std)
+
+        This matches upstream PIL preprocessing exactly:
+        - Fixed-size resize (no aspect ratio preservation)
+        - Bicubic interpolation with antialias
+        - uint8 quantization before resizing (like PIL sees it)
+        - ToTensor() equivalent: uint8 -> float in [0,1]
+        - Normalize with cached mean/std
+        """
+        x = rgb_bhwc  # [B, H, W, 3]
+
+        # Bring to [0,255] like image pixels
+        if x.max() <= 1.0:
+            x = x * 255.0
+
+        # Mimic PIL uint8 quantization (rounding and clamping)
+        x = x.round().clamp(0, 255).to(torch.uint8)  # [B, H, W, 3]
+
+        # BHWC -> BCHW
+        x = x.permute(0, 3, 1, 2)  # [B, 3, H, W] uint8
+
+        S = self.image_size
+
+        # Resize to fixed size (S,S) with bicubic, antialias if available
+        if HAS_TORCHVISION_V2:
+            try:
+                x = F_v2.resize(
+                    x,
+                    size=[S, S],
+                    interpolation=InterpolationMode.BICUBIC,
+                    antialias=True,
+                )
+                # CenterCrop (mostly no-op because it's already SxS)
+                x = F_v2.center_crop(x, output_size=[S, S])
+            except Exception:
+                # Fallback: use functional interpolate
+                x = x.to(torch.float32)
+                x = torch.nn.functional.interpolate(
+                    x, size=(S, S), mode="bicubic", align_corners=False
+                )
+        else:
+            # Fallback: interpolate (needs float)
+            x = x.to(torch.float32)
+            try:
+                x = torch.nn.functional.interpolate(
+                    x,
+                    size=(S, S),
+                    mode="bicubic",
+                    align_corners=False,
+                    antialias=True,
+                )
+            except TypeError:
+                # Older PyTorch versions don't support antialias
+                x = torch.nn.functional.interpolate(
+                    x, size=(S, S), mode="bicubic", align_corners=False
+                )
+
+        # ToTensor(): uint8 -> float in [0,1]
+        if x.dtype != torch.float32:
+            x = x.to(torch.float32)
+        x = x / 255.0
+
+        # Normalize using cached buffers
+        mean = self._clip_mean.to(device=x.device, dtype=x.dtype)
+        std = self._clip_std.to(device=x.device, dtype=x.dtype)
+        x = (x - mean) / std
+
+        return x
+
     def _preprocess_rgb(self, rgb_bhwc: torch.Tensor) -> torch.Tensor:
         """Preprocess RGB tensor for model input.
 
-        When ``enable_gradients`` is False (default), this method mirrors the
-        original behavior: it converts the tensor to a NumPy array, goes
-        through PIL, and applies the upstream CLIP preprocessing pipeline
-        (Compose of Resize/CenterCrop/ToTensor/Normalize).
+        When ``use_torch_preprocess`` is True (default), uses fast tensor-based
+        preprocessing that closely matches PIL preprocessing with bicubic interpolation.
+        This is faster than PIL preprocessing and works well for inference.
 
-        When ``enable_gradients`` is True, a fully differentiable preprocessing
-        path implemented in pure PyTorch is used instead. This:
+        When ``use_torch_preprocess`` is False, uses exact PIL-based preprocessing
+        that matches the original CLIP preprocessing pipeline.
 
-        - Keeps the inputs in tensor form (no detach / NumPy / PIL),
-        - Resizes and center-crops to ``self.image_size``,
-        - Normalizes using the OpenAI dataset statistics.
-
-        The differentiable path is designed to numerically approximate the
-        original preprocessing while allowing gradients to flow back to
-        upstream nodes (e.g., SoftChannelSelector) during training.
+        The ``enable_gradients`` flag controls whether gradients flow through the
+        preprocessing, but the preprocessing method choice is independent.
         """
         if self._preprocess is None:
             raise RuntimeError("AdaCLIPDetector model not initialized")
 
-        # Non-differentiable, exact upstream behavior for standard inference
-        if not self.enable_gradients:
+        # Fast tensor preprocessing path (default) - PIL-matching implementation
+        if self.use_torch_preprocess:
+            return self._preprocess_rgb_torch_pil_match(rgb_bhwc)
+
+        # PIL preprocessing path (exact match with original CLIP preprocessing)
             b = rgb_bhwc.shape[0]
 
             # Convert to uint8 numpy for PIL processing (happens on CPU)
@@ -232,69 +327,6 @@ class AdaCLIPDetector(Node):
             target_device = self.current_device
             return batch_tensor.to(target_device)
 
-        # Differentiable preprocessing path for training mode
-        # rgb_bhwc: [B, H, W, 3], float32 in [0,1] or [0,255]
-        b, h, w, c = rgb_bhwc.shape
-        # assert c == 3, f"Expected 3 channels for RGB, got {c}"
-
-        # Normalize to [0,1]
-        rgb = rgb_bhwc
-        if rgb.max() > 1.0:
-            rgb = rgb / 255.0
-        rgb = torch.clamp(rgb, 0.0, 1.0)
-
-        # Convert to BCHW
-        rgb_bchw = rgb.permute(0, 3, 1, 2)  # [B, 3, H, W]
-
-        # Resize with preserved aspect ratio then center-crop to image_size
-        target_size = self.image_size
-
-        # Compute scale to make the smaller side == target_size, then crop center
-        in_h, in_w = h, w
-        if in_h == target_size and in_w == target_size:
-            resized = rgb_bchw
-        else:
-            scale = target_size / min(in_h, in_w)
-            new_h = int(round(in_h * scale))
-            new_w = int(round(in_w * scale))
-            resized = torch.nn.functional.interpolate(
-                rgb_bchw,
-                size=(new_h, new_w),
-                mode="bilinear",
-                align_corners=False,
-            )
-
-        _, _, rh, rw = resized.shape
-        top = max(0, (rh - target_size) // 2)
-        left = max(0, (rw - target_size) // 2)
-        bottom = top + target_size
-        right = left + target_size
-        cropped = resized[:, :, top:bottom, left:right]  # [B, 3, S, S]
-
-        # If input is smaller than target_size in some dimension, pad reflectively
-        if cropped.shape[2] != target_size or cropped.shape[3] != target_size:
-            pad_h = max(0, target_size - cropped.shape[2])
-            pad_w = max(0, target_size - cropped.shape[3])
-            padding = (
-                pad_w // 2,
-                pad_w - pad_w // 2,
-                pad_h // 2,
-                pad_h - pad_h // 2,
-            )  # (left, right, top, bottom)
-            cropped = torch.nn.functional.pad(cropped, padding, mode="reflect")
-            cropped = cropped[:, :, :target_size, :target_size]
-
-        # Normalize using OpenAI dataset mean/std
-        mean = torch.tensor(OPENAI_DATASET_MEAN, dtype=cropped.dtype, device=cropped.device).view(
-            1, 3, 1, 1
-        )
-        std = torch.tensor(OPENAI_DATASET_STD, dtype=cropped.dtype, device=cropped.device).view(
-            1, 3, 1, 1
-        )
-        normalized = (cropped - mean) / std
-
-        return normalized
-
     def forward(
         self,
         rgb_image: torch.Tensor,
@@ -314,7 +346,14 @@ class AdaCLIPDetector(Node):
         b, h, w, _ = rgb_image.shape
 
         # Preprocess images
+        preprocess_start = time.perf_counter()
         img_tensor = self._preprocess_rgb(rgb_image)
+        preprocess_end = time.perf_counter()
+        preprocess_time_ms = (preprocess_end - preprocess_start) * 1000.0
+        logger.info(
+            f"[AdaCLIPDetector] Preprocessing time: {preprocess_time_ms:.2f}ms "
+            f"(method={'tensor' if self.use_torch_preprocess else 'PIL'})"
+        )
         
         # Convert to half precision if enabled
         if self.use_half_precision and torch.cuda.is_available():
@@ -400,10 +439,71 @@ class AdaCLIPDetector(Node):
         if anomaly_score.dtype == torch.float16:
             anomaly_score = anomaly_score.float()
 
+        # DEBUG: Save intermediate tensors
+        if hasattr(self, "_debug_save_dir") and self._debug_save_dir:
+            if context is not None:
+                for frame_idx in range(b):
+                    self._save_debug_tensor(rgb_image[frame_idx], "input_rgb", context, frame_idx)
+                    self._save_debug_tensor(scores[frame_idx], "output_scores", context, frame_idx)
+            else:
+                if hasattr(self, "_debug") and self._debug:
+                    print(f"[AdaCLIPDetector] DEBUG: context is None, skipping debug save")
+        else:
+            if hasattr(self, "_debug") and self._debug:
+                print(f"[AdaCLIPDetector] DEBUG: _debug_save_dir not set or empty. "
+                      f"hasattr={hasattr(self, '_debug_save_dir')}, "
+                      f"value={getattr(self, '_debug_save_dir', 'NOT_SET')}")
+
+        # DEBUG: Print output info
+        if hasattr(self, "_debug") and self._debug:
+            print(f"[AdaCLIPDetector] Input RGB: shape={rgb_image.shape}, "
+                  f"min={rgb_image.min().item():.4f}, max={rgb_image.max().item():.4f}, "
+                  f"mean={rgb_image.mean().item():.4f}, requires_grad={rgb_image.requires_grad}")
+            print(f"[AdaCLIPDetector] Output scores: shape={scores.shape}, "
+                  f"min={scores.min().item():.4f}, max={scores.max().item():.4f}, "
+                  f"mean={scores.mean().item():.4f}, requires_grad={scores.requires_grad}")
+
         return {
             "scores": scores,
             "anomaly_score": anomaly_score,
         }
+
+    def _save_debug_tensor(
+        self, tensor: torch.Tensor, name: str, context: Context | None, frame_idx: int
+    ) -> None:
+        """Save tensor for debugging if debug mode is enabled."""
+        if not (hasattr(self, "_debug_save_dir") and self._debug_save_dir):
+            if hasattr(self, "_debug") and self._debug:
+                print(f"[AdaCLIPDetector._save_debug_tensor] Skipping: _debug_save_dir not set")
+            return
+
+        if context is None:
+            if hasattr(self, "_debug") and self._debug:
+                print(f"[AdaCLIPDetector._save_debug_tensor] Skipping: context is None")
+            return
+
+        # Create directory structure: {stage}/epoch_{epoch}/batch_{batch_idx}/frame_{frame_idx}/
+        # Convert ExecutionStage enum to string (e.g., ExecutionStage.TRAIN -> "train")
+        stage_str = context.stage.value if hasattr(context.stage, "value") else str(context.stage)
+        save_dir = (
+            Path(self._debug_save_dir)
+            / stage_str
+            / f"epoch_{context.epoch:03d}"
+            / f"batch_{context.batch_idx:03d}"
+            / f"frame_{frame_idx:03d}"
+        )
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        # Convert tensor to numpy and save
+        try:
+            tensor_np = tensor.detach().cpu().numpy()
+            save_path = save_dir / f"{self.name}_{name}.npy"
+            np.save(save_path, tensor_np)
+            if hasattr(self, "_debug") and self._debug:
+                print(f"[AdaCLIPDetector._save_debug_tensor] Saved: {save_path}")
+        except Exception as e:
+            if hasattr(self, "_debug") and self._debug:
+                print(f"[AdaCLIPDetector._save_debug_tensor] ERROR saving {name}: {e}")
 
     def load_state_dict(self, state_dict, strict: bool = True):
         """Load state dict with key remapping for _clip_model/_model compatibility.

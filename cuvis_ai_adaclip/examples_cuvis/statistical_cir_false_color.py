@@ -107,18 +107,25 @@ def main(**kwargs):
     band_selector = CIRFalseColorSelector(nir_nm=nir_nm, red_nm=red_nm, green_nm=green_nm)
 
     # Read optimization flags from config (default to False for non-optimized comparison)
-    use_half_precision = kwargs.get("use_half_precision", False)
-    enable_warmup = kwargs.get("enable_warmup", False)
+    use_half_precision = kwargs.get("use_half_precision", True)
+    enable_warmup = kwargs.get("enable_warmup", True)
+    use_torch_preprocess = kwargs.get("use_torch_preprocess", True)  # Default to True for fast path
 
-    logger.info(f"AdaCLIP optimizations: FP16={use_half_precision}, Warmup={enable_warmup}")
+    # Use image_size=336 for faster inference (smaller input = faster processing)
+    image_size = 336
+    
+    logger.info(f"AdaCLIP optimizations: FP16={use_half_precision}, Warmup={enable_warmup}, TorchPreprocess={use_torch_preprocess}")
+    logger.info(f"AdaCLIP image_size: {image_size} (smaller = faster inference)")
 
     adaclip = AdaCLIPDetector(
         weight_name=weight_name,
         backbone=model_name,
         prompt_text=prompt_text,
+        image_size=image_size,
         gaussian_sigma=gaussian_sigma,
         use_half_precision=use_half_precision,
         enable_warmup=enable_warmup,
+        use_torch_preprocess=use_torch_preprocess,
     )
 
     decider = QuantileBinaryDecider(quantile=quantile)

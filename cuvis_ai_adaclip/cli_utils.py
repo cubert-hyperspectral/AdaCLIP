@@ -52,6 +52,8 @@ class AdaCLIPCLI:
                         help="Use half precision for optimization"),
             click.option("--enable-warmup", is_flag=True,
                         help="Enable warmup for optimization"),
+            click.option("--use-torch-preprocess/--no-use-torch-preprocess", default=True,
+                        help="Use fast tensor preprocessing (default: True). Use --no-use-torch-preprocess for PIL preprocessing (exact match)"),
             click.option("--batch-size", type=int, default=1,
                         help="Batch size for data loading"),
         ]
